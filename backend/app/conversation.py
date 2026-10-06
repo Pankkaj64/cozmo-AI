@@ -27,10 +27,15 @@ def command_text(value):
 
 def is_explicit_command(value):
     text = command_text(value)
-    return text in {"those are not mine", "these are not mine", "next shelf", "move to the next shelf", "next section", "capture", "capture now", "capture this shelf", "take a picture", "all shelves captured", "all shelves walls and floor captured", "coverage complete", "stop talking", "quiet", "pause voice", "what is missing", "status", "what next"} or bool(
+    return text in {"those are not mine", "these are not mine", "next shelf", "move to the next shelf", "next section", "capture", "capture now", "capture this shelf", "take a picture", "all shelves captured", "all shelves walls and floor captured", "coverage complete", "stop talking", "quiet", "pause voice", "what is missing", "status", "what next", "show report", "open report", "where is my report", "where's my report", "why is there no report", "why can't i see the report", "report please"} or is_report_question(text) or bool(
         re.fullmatch(r"(?:please )?(?:skip|exclude)(?: that| this| the)? shelf(?:,? (?:those|these) are not mine)?", text)
         or re.fullmatch(r"(?:that |this |it )?(?:is |is a |is an )?(?:a |an )?(?:first edition|signed copy|rare edition|antiquarian book|print|original)", text)
         or re.match(r"(?:the )?title is ", text))
+
+
+def is_report_question(value):
+    text = command_text(value)
+    return "report" in text and any(word in text for word in ("why", "where", "cannot", "can't", "cant", "see", "show", "open", "missing"))
 
 
 def respond(packet, turn: Turn, conversational_reply=None):
@@ -139,6 +144,16 @@ def respond(packet, turn: Turn, conversational_reply=None):
                 }
             )
             reply = "Recorded that title as claimant supplied. It still needs an evidence check."
+    elif text in {"show report", "open report", "report please"} or (is_report_question(text) and not any(word in text for word in ("why", "where", "cannot", "can't", "cant", "missing"))):
+        if packet.get("sweep", {}).get("finished_at"):
+            reply, action = "Here’s the latest report. It lists identified contents and keeps uncertain candidates in a separate review section.", "show_report"
+        else:
+            reply = "I can show it once this sweep is saved. Choose Finish sweep and I’ll create the report; we can keep scanning first if you’re not done."
+    elif text in {"where is my report", "where's my report", "why is there no report", "why can't i see the report"} or (is_report_question(text) and any(word in text for word in ("why", "where", "cannot", "can't", "cant", "missing"))):
+        if packet.get("sweep", {}).get("finished_at"):
+            reply, action = "Your sweep is saved. I’ve taken you to the latest report link under Review before submission.", "show_report"
+        else:
+            reply = "A report is created when the sweep is saved. I don’t see a finished sweep yet. Would you like to finish now, or keep scanning?"
     elif text in {"what is missing", "status", "what next"}:
         reply = packet.get("guidance", {}).get(
             "text", "Capture the first shelf to begin."

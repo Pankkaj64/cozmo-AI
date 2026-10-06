@@ -92,34 +92,123 @@ def table(headers, rows):
 
 
 def report_html(packet: dict) -> str:
-    """Concise inventory report; retain the complete audit in the JSON packet."""
+    """Readable report of identified contents and unresolved candidates."""
     sweep = packet["sweep"]
 
     def cell(value):
         return escape(str(value)) if value is not None else ""
 
     from .materials import identified_materials
+
     exported = identified_materials(packet)["materials"]
+    identified_ids = {row["id"] for row in exported}
+    reasons = {}
+    for finding in packet.get("review_queue", []):
+        reasons.setdefault(finding.get("ref_id"), []).append(
+            finding.get("reason", "Needs review")
+        )
+
+    def evidence(line):
+        ref = line.get("frame_ref", "")
+        return link(ref, "Open frame") if ref else ""
+
+    headers = [
+        "ID",
+        "Shelf",
+        "Title / candidate",
+        "Author",
+        "Publisher",
+        "Edition",
+        "Status",
+        "Review notes",
+        "Evidence",
+        "Spine (H × T)",
+    ]
     rows = []
-    for book in exported:
-        if book["type"] != "book":
-            continue
-        spine = book.get("spine_cm", {})
-        size = f"{cell(spine['height'])} × {cell(spine['thickness'])} cm" if spine else ""
-        rows.append([cell(book["id"]), cell(book.get("shelf", "")), cell(book["name"]),
-                     cell(book.get("author", "")), cell(book.get("publisher", "")), cell(book.get("edition", "")),
-                     cell(book["status"].replace("_", " ")), link(book["evidence"], "Open frame") if book["evidence"] else "", size])
+    candidate_rows = []
+    for book in packet.get("books", []):
+        is_identified = book.get("id") in identified_ids
+        spine = ""
+        if (
+            book.get("spine_height_cm") is not None
+            and book.get("spine_thickness_cm") is not None
+        ):
+            spine = f"{cell(book['spine_height_cm'])} × {cell(book['spine_thickness_cm'])} cm"
+        title = (
+            book.get("title")
+            or book.get("proposed_title")
+            or "Unidentified book candidate"
+        )
+        row = [
+            cell(book.get("id", "")),
+            cell(book.get("shelf", "")),
+            cell(title),
+            cell(book.get("author") or book.get("proposed_author", "")),
+            cell(book.get("publisher") or book.get("proposed_publisher", "")),
+            cell(book.get("edition", "")),
+            cell(book.get("status", "unverified").replace("_", " ")),
+            "<br>".join(cell(x) for x in reasons.get(book.get("id"), [])),
+            evidence(book),
+            spine,
+        ]
+        (rows if is_identified else candidate_rows).append(row)
     object_rows = []
-    for item in exported:
-        if item["type"] != "object":
-            continue
+    item_candidates = []
+    for item in packet.get("items", []):
         dims = item.get("dimensions_cm", {})
-        size = " × ".join(cell(dims.get(k)) for k in ("w", "h", "d")) + " cm" if dims else ""
-        object_rows.append([cell(item["id"]), cell(item["name"]), cell(item.get("material", "")),
-                            cell(item.get("brand_model", "")), cell(item["status"].replace("_", " ")),
-                            link(item["evidence"], "Open frame") if item["evidence"] else "", size])
-    objects = "<h2>Other identified contents</h2>" + table(["ID", "Name", "Material", "Brand / model", "Status", "Evidence", "Dimensions"], object_rows) if object_rows else ""
-    inventory = table(["ID", "Shelf", "Title", "Author", "Publisher", "Edition", "Status", "Evidence", "Spine (H × T)"], rows) if rows else "<p>No verified book identities yet.</p>"
-    return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Library inventory</title>
+        size = " × ".join(
+            cell(dims.get(k)) for k in ("w", "h", "d") if dims.get(k) is not None
+        )
+        size = f"{size} cm" if size else ""
+        row = [
+            cell(item.get("id", "")),
+            cell(
+                item.get("category")
+                or item.get("proposed_category")
+                or "Unidentified object candidate"
+            ),
+            cell(item.get("material", "")),
+            cell(item.get("brand_model", "")),
+            cell(item.get("status", "unverified").replace("_", " ")),
+            "<br>".join(cell(x) for x in reasons.get(item.get("id"), [])),
+            evidence(item),
+            size,
+        ]
+        (object_rows if item.get("id") in identified_ids else item_candidates).append(
+            row
+        )
+    object_headers = [
+        "ID",
+        "Name / candidate",
+        "Material",
+        "Brand / model",
+        "Status",
+        "Review notes",
+        "Evidence",
+        "Dimensions",
+    ]
+    objects = (
+        "<h2>Other identified contents</h2>" + table(object_headers, object_rows)
+        if object_rows
+        else ""
+    )
+    candidate_objects = (
+        "<h2>Unverified object candidates</h2><p>These detections are shown for review and are not included in identified contents.</p>"
+        + table(object_headers, item_candidates)
+        if item_candidates
+        else ""
+    )
+    inventory = (
+        table(headers, rows) if rows else "<p>No verified book identities yet.</p>"
+    )
+    candidates = (
+        (
+            "<h2>Unverified book candidates</h2><p>Detected books remain listed here until their identities are verified. Unknown prices and measurements are not included in totals.</p>"
+            + table(headers, candidate_rows)
+        )
+        if candidate_rows
+        else ""
+    )
+    return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Library inventory</title>
 <style>body{{font:14px system-ui;color:#172321;margin:32px}}h1{{font-size:24px}}table{{border-collapse:collapse;width:100%;font-size:12px}}th,td{{border:1px solid #d9e1dc;padding:9px;text-align:left;vertical-align:top;overflow-wrap:anywhere}}th{{background:#eef3ef}}td:first-child{{max-width:130px}}@media print{{body{{margin:10px}}thead{{display:table-header-group}}tr{{break-inside:avoid}}}}</style>
-</head><body><h1>Library inventory</h1><p>{cell(sweep.get("country", ""))} · {cell(sweep.get("captured_at", ""))}</p><h2>Books</h2>{inventory}{objects}</body></html>'''
+</head><body><h1>Library inventory</h1><p>{cell(sweep.get("country", ""))} · {cell(sweep.get("captured_at", ""))}</p><h2>Identified books</h2>{inventory}{candidates}{objects}{candidate_objects}</body></html>"""

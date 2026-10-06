@@ -24,7 +24,7 @@ from .dialogue import converse
 from .measurement import Calibration, RoomInput, room_geometry
 from .pricing import Offer, apply_prices
 from .research import research_inventory
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import asyncio
 import copy
@@ -348,6 +348,15 @@ async def get_sweep(sweep_id: str):
     return sweep["packet"]
 
 
+@app.get("/api/sweeps/{sweep_id}/report", response_class=HTMLResponse)
+def get_report(sweep_id: str):
+    """Render the report from the latest packet so old/missing exports still open."""
+    sweep = require_sweep(sweep_id)
+    html = report_html(sweep["packet"])
+    html = html.replace('href="../frames/', 'href="/data/frames/').replace('href="../videos/', 'href="/data/videos/')
+    return HTMLResponse(html)
+
+
 def require_sweep(sweep_id):
     sweep = SWEEPS.get(sweep_id)
     if sweep is None:
@@ -364,12 +373,18 @@ def require_sweep(sweep_id):
 @app.get("/api/sweeps")
 async def list_sweeps():
     records = {}
-    for path in sorted(PACKET_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
+    for path in sorted(
+        PACKET_DIR.glob("*.json"), 
+        key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
         try:
             data = json.loads(path.read_text())
             packet = data.get("packet", data)
             sweep = packet["sweep"]
-            records.setdefault(sweep["id"], {"id": sweep["id"], "captured_at": sweep["captured_at"], "country": sweep["country"]})
+            records.setdefault(sweep["id"], {
+                "id": sweep["id"], 
+                "captured_at": sweep["captured_at"], 
+                "country": sweep["country"]
+            })
         except (ValueError, KeyError, OSError):
             continue
     return list(records.values())
