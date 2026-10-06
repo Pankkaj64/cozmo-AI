@@ -1,0 +1,13 @@
+record_type,id,frame_ref,shelf_or_location,ground_truth_value,system_value,unit,notes
+book_count,room,,,,,books,Count every book including stacked and flat
+book_title,book-001,,,,,text,Enter every human-legible spine
+book_spine_height,book-001,,,,,cm,Hand-measure sample of 20
+book_spine_thickness,book-001,,,,,cm,Hand-measure sample of 20
+book_price,book-001,,,,,currency,15 hand-checked prices; save source URL and date in notes
+non_book,item-001,,,,,category,At least 8 room items
+room_length,room,,,,,m,Tape measure
+room_width,room,,,,,m,Tape measure
+room_height,room,,,,,m,Tape measure
+floor_area,room,,,,,m2,Tape-measured ground truth
+wall_area,room,,,,,m2,Record non-rectangular geometry if needed
+shelved_wall_area,room,,,,,m2,Measure wall area covered by shelving

@@ -1,0 +1,16 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+python-multipart>=0.0.9
+httpx>=0.27,<1
+python-dotenv>=1,<2
+pydantic>=2.8,<3
+# Local Moondream inference through Photon (base model requires no API key)
+moondream
+Pillow>=10,<13
+# Local object detection. Weights are downloaded explicitly with tools/setup_detector.py.
+ultralytics==8.4.173
+# Local OCR (large dependency; can be installed after the backend starts)
+paddleocr>=3.0,<4
+
+# Text tokenization needed only while fusing YOLOE prompts during setup.
+clip @ git+https://github.com/ultralytics/CLIP.git@a13192f8cb767260d7dfd98c843b0716593169e7

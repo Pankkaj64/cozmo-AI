@@ -4,12 +4,15 @@ Python/FastAPI + React/TypeScript implementation of the Library Contents Claim A
 
 **Current limits:** this is an implemented workflow, not an accuracy-certified submission. The local detector provides book boxes quickly; crop OCR and independent checks can still miss books or fail to read text. No 60-book ground-truth evaluation or unedited room demo has been collected. Calibrated spine measurement needs a visible known reference and valid spine bounds. Room dimensions need known dimensions/LiDAR/reference geometry. Market matches need verification; missing values remain unknown. These requirements are not represented as passed.
 
+Architecture and flow diagrams: [docs/architecture.md](docs/architecture.md).
+
 ## Run
 
 Python 3.11–3.13, Node 20+, Ollama; macOS OCR also requires Apple's Swift command-line tools. The first model downloads total several GB. Active defaults and commented model alternatives are in `backend/model_choices.env`.
 
 ```bash
 ollama pull qwen2.5vl:3b
+ollama pull gemma3:latest
 ollama pull qwen2.5:3b
 cd backend
 python3 -m venv .venv
@@ -80,7 +83,7 @@ Kept: server-owned state, role-labelled dialogue, sequential perception/domain-r
 - `backend/app/measurement.py`: reference scale, spine geometry, rectangular/polygon room geometry.
 - `backend/app/pricing.py`: offer validation, currency conversion, appraisal gates and local-quote preference.
 - `backend/app/research.py`: optional work lookup and replaceable `PricingService` / `EbayPricingService` market evidence retrieval.
-- `backend/app/packet.py`: decimal monetary subtotals and full HTML report.
+- `backend/app/materials.py`, `packet.py`: identified-only materials, concise HTML and decimal monetary subtotals.
 - `frontend/src/App.tsx`, `ReviewTools.tsx`, `recording.ts`: live capture, agent/review UI and camera recording.
 - `backend/tools/evaluate.py`: complete ground-truth scoring; `docs/` contains architecture, limitations and collection instructions.
 
@@ -90,7 +93,7 @@ The room inventory covers shelving, furniture, coffee machines, lamps, framed ar
 
 **Verify identity and visible details** records title, author, publisher, edition, category, material, brand and artwork type with a source. False positives and duplicates can be excluded with a reason; their evidence remains in JSON. Reviewed identity, measurements and offers survive later matching observations. Association uses crop hashes, color histograms, geometric feature matches and title overlap; it is not an independent physical count. Unreadable visually ambiguous copies may need manual duplicate review.
 
-The feature-status panel and HTML show all six assignment areas: capture, books, room contents, measurements, valuation and exports. An implemented form is not evidence that the associated requirement or accuracy threshold has been satisfied. Unknown scale, titles and source prices remain flagged.
+The feature-status panel shows all six assignment areas: capture, books, room contents, measurements, valuation and exports. An implemented form is not evidence that the associated requirement or accuracy threshold has been satisfied. Unknown scale, titles and source prices remain flagged.
 
 Assignment mapping and outstanding acceptance evidence: [docs/assignment-coverage.md](docs/assignment-coverage.md).
 
@@ -140,7 +143,7 @@ Replay latency is reported separately from the original capture duration. On an 
 
 Development uses Vite's same-origin `/api` and `/data` proxies. After `npm run build`, FastAPI serves the built UI at `http://localhost:8000`. For a phone, serve this same origin through trusted HTTPS; localhost refers to the phone itself, so a separate API needs an explicitly configured reachable `VITE_API_URL` and `CORS_ORIGINS`. No insecure camera bypass is used.
 
-No GitHub CLI/account connection is available in this workspace, so a private remote repository has not been created. Secrets, local models and claim evidence are ignored; publish source code to your private repository and share the evidence ZIP separately.
+The source repository is [Pankkaj64/cozmo-AI](https://github.com/Pankkaj64/cozmo-AI). Secrets, downloaded models, dependencies and local claim evidence are ignored; evidence ZIPs are shared separately.
 
 
 ## Conversational voice

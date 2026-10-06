@@ -1,0 +1,24 @@
+.env
+.venv/
+node_modules/
+dist/
+__pycache__/
+backend/.runtime/
+*.py[cod]
+data/frames/*
+data/packets/*
+data/diagnostics/
+!data/frames/.gitkeep
+!data/packets/.gitkeep
+
+data/videos/
+
+data/claims/
+
+# Local system files, generated build state and downloaded model weights.
+.DS_Store
+*.tsbuildinfo
+*.pt
+*.onnx
+*.safetensors
+backend/mobileclip2_b.ts
