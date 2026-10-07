@@ -103,11 +103,8 @@ def start_sweep(start: SweepStart) -> dict:
     refresh_workflow(packet)
     save_active_sweep(sweep_id)
     event("sweep.created", sweep_id=sweep_id)
-    
-    return {
-        "sweep_id": sweep_id, 
-        "packet": packet
-    }
+
+    return {"sweep_id": sweep_id, "packet": packet}
 
 
 def _check_evidence(packet: dict) -> None:

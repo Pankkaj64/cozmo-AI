@@ -25,11 +25,7 @@ Verification = Literal["operator_checked", "provider_matched"]
 
 def _retrievable(url: str) -> bool:
     parsed = urlparse(url)
-    return (
-        parsed.scheme in {"https", "http"}
-        and bool(parsed.hostname)
-        and not parsed.username
-    )
+    return parsed.scheme in {"https", "http"} and bool(parsed.hostname) and not parsed.username
 
 
 class Quote(BaseModel):
@@ -142,9 +138,7 @@ def needs_appraisal(line: dict, threshold: float = DEFAULT_APPRAISAL_THRESHOLD) 
 
 def appraisal_reason(line: dict, threshold: float) -> str:
     if line.get("appraisal_required"):
-        return (
-            "Claimant stated a special edition or original; human appraisal required."
-        )
+        return "Claimant stated a special edition or original; human appraisal required."
     traits = " ".join(
         str(line.get(key, "")) for key in ("edition", "description", "claimant_notes")
     )
@@ -182,9 +176,7 @@ def author_present(author: str, listing: str) -> bool | None:
     return words[-1] in normalized(listing).split()
 
 
-def match_score(
-    book: dict, listing_title: str, *, isbn_match: bool = False
-) -> tuple[float, str]:
+def match_score(book: dict, listing_title: str, *, isbn_match: bool = False) -> tuple[float, str]:
     """Score a listing against the identified book and explain the basis."""
     if isbn_match:
         return 1.0, "ISBN read from the spine matches the listing"
@@ -230,12 +222,17 @@ _LOCALES: dict[str, tuple[str, str, str]] = {
 }
 _BY_NAME = {name.casefold(): code for code, (name, _, _) in _LOCALES.items()}
 
+
 # schema for country code and currency
 class Locale(BaseModel):
     country: str = Field(min_length=2)
-    currency: str = Field(pattern=r"^[A-Z]{3}$") #validate country code must be capital letters of three words
-    country_code: str = Field(default="", pattern=r"^([A-Z]{2})?$") # either empty or two capital letters
-    ebay_marketplace: str = ""   # empty and fills from table
+    currency: str = Field(
+        pattern=r"^[A-Z]{3}$"
+    )  # validate country code must be capital letters of three words
+    country_code: str = Field(
+        default="", pattern=r"^([A-Z]{2})?$"
+    )  # either empty or two capital letters
+    ebay_marketplace: str = ""  # empty and fills from table
 
     def matches(self, other_country: str, other_currency: str) -> bool:
         return (
@@ -248,9 +245,7 @@ def known_locales() -> list[dict]:
     """Supported countries with their default currency, for the setup screen."""
     return [
         {"country_code": code, "country": name, "currency": currency}
-        for code, (name, currency, _) in sorted(
-            _LOCALES.items(), key=lambda kv: kv[1][0]
-        )
+        for code, (name, currency, _) in sorted(_LOCALES.items(), key=lambda kv: kv[1][0])
     ]
 
 
@@ -265,17 +260,11 @@ def resolve_locale(
     code = country_code.upper().strip()
     if not code and country:
         code = _BY_NAME.get(country.casefold().strip(), "")
-    name, default_currency, default_marketplace = _LOCALES.get(
-        code, ("", "", "EBAY_US")
-    )
-    resolved_country = (
-        name or country.strip()
-    )  # table spelling wins when the country is known
+    name, default_currency, default_marketplace = _LOCALES.get(code, ("", "", "EBAY_US"))
+    resolved_country = name or country.strip()  # table spelling wins when the country is known
     resolved_currency = currency.upper().strip() or default_currency
     if not resolved_country or not resolved_currency:
-        raise ValueError(
-            "Country and currency are required; supply a known country code"
-        )
+        raise ValueError("Country and currency are required; supply a known country code")
     return Locale(
         country=resolved_country,
         currency=resolved_currency,
@@ -388,11 +377,7 @@ def _accept(
         reason = ""
         if quote.verification == "provider_matched" and quote.match_score < minimum:
             reason = f"Listing does not match the identified work (score {quote.match_score:.2f} < {minimum:.2f})"
-        elif (
-            quote.is_ebook
-            and kind == "replacement"
-            and not settings.pricing_allow_ebook_proxy
-        ):
+        elif quote.is_ebook and kind == "replacement" and not settings.pricing_allow_ebook_proxy:
             reason = "Ebook list price is not a physical replacement cost"
         else:
             fx, reason = _conversion(quote, currency, fx_rates)
@@ -400,9 +385,7 @@ def _accept(
             rejected.append({**_summary(quote), "reason": reason})
             continue
         accepted.append((quote, fx))
-    local = (
-        lambda q: q.country.casefold() == country.casefold() and q.currency == currency
-    )  # noqa: E731
+    local = lambda q: q.country.casefold() == country.casefold() and q.currency == currency  # noqa: E731
     accepted.sort(
         key=lambda pair: (
             pair[0].verification == "operator_checked",
@@ -415,9 +398,7 @@ def _accept(
     return accepted, rejected
 
 
-def _priced(
-    quote: Quote, fx: dict | None, currency: str, low: float, high: float
-) -> dict:
+def _priced(quote: Quote, fx: dict | None, currency: str, low: float, high: float) -> dict:
     rate = Decimal(str(fx["rate"])) if fx else Decimal(1)
     value = {
         **quote.model_dump(
@@ -464,18 +445,13 @@ def _select(
     if quote.high is not None and quote.high != quote.amount:
         return _priced(quote, fx, currency, quote.amount, quote.high), "range"
     if len(quote.comparables) >= 2:
-        amounts = [
-            c["amount"]
-            for c in quote.comparables
-            if c.get("currency") == quote.currency
-        ]
+        amounts = [c["amount"] for c in quote.comparables if c.get("currency") == quote.currency]
         if len(amounts) >= 2:
             return _priced(quote, fx, currency, min(amounts), max(amounts)), "range"
     same_basis = [
         q
         for q, f in accepted
-        if q.currency == quote.currency
-        and (f or {}).get("rate") == (fx or {}).get("rate")
+        if q.currency == quote.currency and (f or {}).get("rate") == (fx or {}).get("rate")
     ]
     if len(same_basis) >= 2:
         amounts = [q.amount for q in same_basis] + [
@@ -521,18 +497,12 @@ def apply_prices(
         blocked = needs_appraisal(line, threshold)
         selected: dict[str, dict] = {}
         for kind in kinds:
-            accepted, rejected = _accept(
-                quotes, line, kind, country, currency, fx_rates
-            )
+            accepted, rejected = _accept(quotes, line, kind, country, currency, fx_rates)
             entry = {
                 "candidates": [_summary(q) for q, _ in accepted],
                 "rejected": rejected,
                 "selected": None,
-                "status": (
-                    "not_identified"
-                    if is_book and not line.get("title")
-                    else "no_source"
-                ),
+                "status": ("not_identified" if is_book and not line.get("title") else "no_source"),
             }
             if blocked:
                 entry["status"] = "needs_appraisal"
@@ -569,9 +539,7 @@ def apply_prices(
     return output
 
 
-def _write_line(
-    line: dict, is_book: bool, selected: dict[str, dict], blocked: bool
-) -> None:
+def _write_line(line: dict, is_book: bool, selected: dict[str, dict], blocked: bool) -> None:
     if is_book:
         line["replacement_cost"] = selected.get("replacement", dict(EMPTY_REPLACEMENT))
         line["used_value"] = selected.get("used", dict(EMPTY_USED))
