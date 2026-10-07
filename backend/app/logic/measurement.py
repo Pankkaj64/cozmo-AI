@@ -1,4 +1,6 @@
-"""Metric geometry from recorded references, never from a model's numeric guess."""
+"""Metric geometry from recorded references: spine cm, shelf run, room areas."""
+
+from __future__ import annotations
 
 import math
 from typing import Literal
@@ -22,6 +24,7 @@ class Calibration(BaseModel):
     reference: str = Field(min_length=3, max_length=300)
     same_plane: Literal[True]
     front_on: Literal[True]
+    method: Literal["reference_line", "shelf_width"] = "reference_line"
 
 
 class RoomInput(BaseModel):
@@ -34,28 +37,20 @@ class RoomInput(BaseModel):
     shelving: list[tuple[float, float]] = Field(default_factory=list, max_length=50)
     source: str = Field(min_length=3, max_length=500)
     frame_ref: str
-    method: Literal["known_dimensions", "lidar", "reference_geometry"] = (
-        "known_dimensions"
-    )
+    method: Literal["known_dimensions", "lidar", "reference_geometry"] = "known_dimensions"
 
     @model_validator(mode="after")
     def geometry(self):
         if self.polygon_m:
-            if len(self.polygon_m) < 3 or len(set(self.polygon_m)) != len(
-                self.polygon_m
-            ):
-                raise ValueError(
-                    "Polygon needs at least three distinct boundary points"
-                )
-            if any(
-                not math.isfinite(v) or abs(v) > 100 for p in self.polygon_m for v in p
-            ):
+            if len(self.polygon_m) < 3 or len(set(self.polygon_m)) != len(self.polygon_m):
+                raise ValueError("Polygon needs at least three distinct boundary points")
+            if any(not math.isfinite(v) or abs(v) > 100 for p in self.polygon_m for v in p):
                 raise ValueError("Invalid polygon coordinate")
 
             def cross(a, b, c):
                 return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 
-            edges = list(zip(self.polygon_m, self.polygon_m[1:] + self.polygon_m[:1]))
+            edges = list(zip(self.polygon_m, self.polygon_m[1:] + self.polygon_m[:1], strict=True))
             for i, (a, b) in enumerate(edges):
                 for j, (c, d) in enumerate(edges):
                     if j <= i + 1 or (i == 0 and j == len(edges) - 1):
@@ -67,11 +62,7 @@ class RoomInput(BaseModel):
                         raise ValueError("Polygon boundaries intersect")
         elif self.length_m is None or self.width_m is None:
             raise ValueError("Supply length and width, or a floor-plan polygon")
-        if any(
-            not math.isfinite(v) or v <= 0 or v > 100
-            for pair in self.shelving
-            for v in pair
-        ):
+        if any(not math.isfinite(v) or v <= 0 or v > 100 for pair in self.shelving for v in pair):
             raise ValueError("Shelving widths and heights must be positive metres")
         return self
 
@@ -79,7 +70,7 @@ class RoomInput(BaseModel):
 def room_geometry(value: RoomInput) -> dict:
     if value.polygon_m:
         points = value.polygon_m
-        edges = list(zip(points, points[1:] + points[:1]))
+        edges = list(zip(points, points[1:] + points[:1], strict=True))
         area = abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in edges)) / 2
         perimeter = sum(math.dist(a, b) for a, b in edges)
         length = max(p[0] for p in points) - min(p[0] for p in points)
@@ -116,9 +107,7 @@ def room_geometry(value: RoomInput) -> dict:
     }
 
 
-def measure_spine(
-    box: list[float], calibration: Calibration, width: int, height: int
-) -> dict:
+def measure_spine(box: list[float], calibration: Calibration, width: int, height: int) -> dict:
     if len(box) != 4 or any(not math.isfinite(v) or not 0 <= v <= 1 for v in box):
         raise ValueError("Spine bounds must be normalized image coordinates")
     x1, y1, x2, y2 = box
@@ -143,3 +132,39 @@ def measure_spine(
             "assumptions": "Long spine edge is height; perspective and rotated spines need review.",
         },
     }
+
+
+def calibrate_from_shelf(packet: dict, shelf: str, width_cm: float) -> int | None:
+    """Known shelf dimensions as the metric scale for the latest frame of `shelf`.
+
+    The horizontal span of the detected shelf (or, failing that, of the row of detected
+    books) is taken as `width_cm`. Books standing on a shelf viewed front-on show their
+    spine face, so their detector boxes become spine height × thickness. Returns how
+    many books were measured, or None when there is no usable frame.
+    """
+    frames = [f for f in packet.get("frames", []) if f.get("shelf") == shelf and f.get("books")]
+    if not frames:
+        return None
+    frame = frames[-1]
+    shelves = [
+        i["bbox"]
+        for i in frame.get("items", [])
+        if i.get("category") == "bookshelf" and i.get("bbox")
+    ]
+    boxes = shelves or [b["bbox"] for b in frame["books"] if b.get("bbox")]
+    x1, x2 = min(b[0] for b in boxes), max(b[2] for b in boxes)
+    y = sum(b[3] for b in boxes) / len(boxes)
+    packet.setdefault("calibrations", {})[frame["frame_ref"]] = {
+        "frame_ref": frame["frame_ref"],
+        "start": {"x": x1, "y": y},
+        "end": {"x": x2, "y": y},
+        "length_cm": width_cm,
+        "reference": f"Claimant-stated shelf width {width_cm:g} cm"
+        + ("" if shelves else " (span of the detected book row)"),
+        "same_plane": True,
+        "front_on": True,
+        "method": "shelf_width",
+    }
+    return sum(
+        1 for b in packet["books"] if b.get("frame_ref") == frame["frame_ref"] and b.get("bbox")
+    )
