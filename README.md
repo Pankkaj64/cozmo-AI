@@ -1,170 +1,180 @@
 # Library Contents Claim Agent
 
-Python/FastAPI + React/TypeScript implementation of the Library Contents Claim Agent brief. A live camera sweep builds a persistent inventory, dialogue, evidence history and review packet. Vision/OCR run locally. Measurements and monetary totals come from code and recorded sources.
+A live voice-and-vision insurance agent that inventories and values a home library in one
+continuous camera sweep. The policyholder walks the room once while talking to the agent; the
+agent directs the capture, the inventory fills in live, and background stages finish
+identification, measurement and sourced pricing. Each sweep ends with `claim_packet.json`
+(the brief's exact output contract) and a readable HTML report built from it.
 
-**Current limits:** this is an implemented workflow, not an accuracy-certified submission. The local detector provides book boxes quickly; crop OCR and independent checks can still miss books or fail to read text. No 60-book ground-truth evaluation or unedited room demo has been collected. Calibrated spine measurement needs a visible known reference and valid spine bounds. Room dimensions need known dimensions/LiDAR/reference geometry. Market matches need verification; missing values remain unknown. These requirements are not represented as passed.
+Everything runs locally on a laptop: FastAPI + Python stages, local YOLO detectors,
+PaddleOCR (or EasyOCR) for spine text, small Ollama vision/chat models (Gemma 3 4B, Qwen3-VL 2B,
+Qwen2.5 3B), and a very plain
+React page for the camera, voice and review. Prices come only from retrievable sources
+(eBay Browse, Google Books, ECB/ER-API FX) and totals are computed in code.
 
-Architecture and flow diagrams: [docs/architecture.md](docs/architecture.md).
+## Run it (about 10 minutes, first model downloads excluded)
 
-## Run
-
-Python 3.11–3.13, Node 20+, Ollama; macOS OCR also requires Apple's Swift command-line tools. The first model downloads total several GB. Active defaults and commented model alternatives are in `backend/model_choices.env`.
+Requirements: Python 3.11–3.13, Node 20+, [Ollama](https://ollama.com), a webcam/phone
+camera and a browser with speech support (Chrome or Edge). Works on macOS, Linux and
+Windows: no Apple-only components.
 
 ```bash
-ollama pull qwen2.5vl:3b
-ollama pull gemma3:latest
-ollama pull qwen2.5:3b
+# 1. local language/vision models (~5 GB total)
+ollama pull gemma3:latest     # reads the visible title of each book crop (4B)
+ollama pull qwen3-vl:2b       # blind check of each crop's category (2B)
+ollama pull qwen2.5:3b        # spoken conversation with the claimant
+
+# 2. backend (use the same Python you will start uvicorn with)
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python tools/setup_detector.py
-# First setup only: do not overwrite an existing .env.
-cp -n .env.example .env
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 --timeout-graceful-shutdown 5
+python3 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt                          # torch/ultralytics/paddle are large
+python tools/setup_detector.py                           # downloads YOLO weights, builds the room detector
+cp .env.example .env                                     # optional: add eBay / Google Books credentials
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+# 3. frontend (second terminal)
+cd frontend && npm install && npm run dev
 ```
 
-In a second terminal:
+Open http://localhost:5173, pick the country (currency follows), press **Start sweep**,
+allow camera and microphone. `GET http://127.0.0.1:8000/api/health` lists the models the
+backend will use; a frame whose guidance says "I could not analyse that view" means a model
+or package is missing in the interpreter that runs uvicorn. If PaddlePaddle refuses to install on your platform, run
+`pip install easyocr` and set `OCR_ENGINE=easyocr` in `backend/.env`.
+
+Tests and lint (no models or network needed):
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd backend && pip install -r requirements-dev.txt && pytest -q && ruff check app tests tools
 ```
 
-Open http://localhost:5173. HTTPS or localhost is required for the camera. A phone accessing the Mac over plain HTTP will not have camera access; use a trusted HTTPS development setup for phone capture. Backend inference has no hosted model key. PaddleOCR is optional on macOS; on other platforms also install a compatible `paddlepaddle` runtime. The backend reads `.env`, then `model_choices.env` defaults; shell variables take precedence. Restart the backend after changing model configuration.
+## How a sweep works
 
-## Capture and review
+1. **Greeting and locale.** The agent greets, confirms country and currency (a runtime
+   setting, see `/api/sweeps/locales`) and explains the sweep in two sentences.
+2. **One continuous pass.** The browser samples a JPEG every 4.5 s and posts it to
+   `/api/sweeps/{id}/frames`. Each frame is saved as evidence (`data/frames/…`), then:
+   detection → crop OCR → title proposal → blind crop check → independent count check.
+3. **The agent talks back.** Guidance (blur, glare, low light, unreadable spines, "move to the
+   next shelf", "is that portrait an original or a print?") is spoken as it changes. The
+   claimant can interrupt: speech is transcribed and sent to `/turns`. Explicit commands
+   ("next shelf", "skip this shelf, those are not mine", "that is a first edition",
+   "title is …") run deterministic tools and are stored as evidence; open questions go to
+   the local conversation model, which sees the live inventory but cannot change facts.
+4. **Live inventory.** The packet streams over Server-Sent Events: books detected,
+   identified, unreadable; items; review count; price when available.
+5. **Background agents.** After capture stops: deferred crop checks, catalogue lookup,
+   price research for every identified line, FX evidence, deterministic valuation and
+   validation.
+6. **Packet.** `Stop sweep → build packet` runs the background stages, writes
+   `data/claims/<id>/claim_packet.json` and `report.html`, records time-to-packet, and the
+   agent reads back a summary assembled in code from the totals. `/bundle` zips the packet,
+   report, referenced frames and a SHA-256 manifest.
 
-1. Confirm country, two-letter delivery country and currency. Start the camera. The greeting explains the sweep. Keep the complete shelf section in view; do not remove individual books.
-2. The camera preview is live video. If recording is supported and checked, a continuous **video-only** recording is saved. Detection analyzes sampled JPEG images, not video clips. Audio is not embedded in this evidence video; use a separate screen recorder for the required one-take demo with agent audio.
-3. Say **next shelf** or change the label for each non-overlapping section. Each sampled view is queued in order, including multiple views under the same label. One inference runs at a time; the UI shows the backlog. A 120-image cap pauses sampling with a warning instead of silently overwriting waiting views. Appearance/text matching associates repeated objects; this is not SLAM or a guarantee of counting identical copies. Books under different shelf labels can still be duplicates; review overlaps.
-4. The agent requests retakes for uncertain counts/unreadable titles and asks whether artwork is a print. Stage activity streams while inference runs. The quality checks are conservative image heuristics, not proof of occlusion/glare detection or full coverage.
-5. Say **skip this shelf**, **capture now**, **next shelf**, **coverage complete** or **status**. Select a line before saying **that is a first edition**, **that is a print**, **that is an original** or **title is …**. Ambiguous statements stay in the review queue. Typed input offers the same tools. Browser speech recognition may use the browser vendor's speech service and is not available in every browser. Stop talking interrupts audio.
-6. Finish waits for pending images and video upload. Optional source research follows. JSON and HTML are generated from the same packet. Use **Review saved sweeps** to reopen a record without starting the camera.
-7. In review, click two endpoints of a known reference in a saved image, enter its centimetre length and confirm a front-on, same-plane view. Mark the selected spine's two corners. Detector boxes enclose whole books and are deliberately excluded from automatic spine measurements. This is assisted annotation on an existing sweep image, not automatic calibrated reconstruction.
-8. Enter room dimensions from an established source, or a non-self-intersecting polygon in metres. The app computes floor and gross wall areas in m²/ft², plus shelving coverage. Gross wall area includes doors/windows. Non-book dimensions accept a recorded metric source. Never enter model guesses as scale evidence.
-9. Record checked local replacement/used prices with URL, date, condition and match basis. A foreign quote needs an explicit dated FX rate/source. Values at or above 2,000 in the selected claim currency, special editions, signed/rare books and original artwork go to appraisal. The threshold is a prototype policy, not an exchange-equivalent universal threshold.
-10. Verify the proposed titles/authors/publishers and room categories/materials against their numbered boxes. Exclude false detections or duplicates with a reason. After review changes, click **Update exports after review** to regenerate the JSON and HTML. Existing exports otherwise remain the previous saved version.
+## Repository layout
 
-## Source research
-
-Optional configuration in `backend/.env`:
-
-```dotenv
-ENABLE_CATALOGUE_LOOKUP=false
-EBAY_ACCESS_TOKEN=
-EBAY_MARKETPLACE_ID=EBAY_US
+```
+backend/app
+  config.py              paths, model names, room classes, API endpoints, env settings (.env first, defaults here)
+  main.py                FastAPI app, middleware, health, static evidence
+  routes.py              every HTTP route (transport only)
+  logic/
+    state.py             sweep store, checkpoints, finish/export, background research and deferred checks
+    perception.py        capture quality, YOLO detection, crop OCR, title proposals, independent count
+    ocr.py               PaddleOCR / EasyOCR behind one function
+    crop_verifier.py     blind crop category check (Gemma 3 via Ollama)
+    tracking.py          appearance + scene alignment across frames
+    identification.py    evidence rules for accepting a title; Open Library work/ISBN lookup
+    measurement.py       reference-scale spines, shelf-width scale, room areas
+    pricing.py           quote models, matching, locale table, appraisal rules, deterministic valuation
+    providers.py         eBay, Google Books, FX evidence, research, second-country comparison
+    claim.py             schemas, totals in code, validation, output contract
+    report.py            HTML report and evidence bundle
+    workflow.py          merge frames into the inventory; measurement → pricing → validation; guidance
+    conversation.py      spoken tools (next shelf, skip, first edition, room size, shelf width, compare) + chat model
+    evaluation.py        pass-bar scoring against ground truth
+    utils.py             logging, stage timing, performance summary
+backend/tools            setup_detector.py, evaluate.py, reprocess_sweep.py
+frontend/src             App.tsx (camera, voice, live inventory, finish → report), components/{Inventory,Conversation}.tsx
+docs/                    architecture.md, failure-log.md, assignment-coverage.md, ground-truth-format.md
+data/                    frames/, packets/ (internal state), claims/<id>/ (deliverables) — git-ignored
 ```
 
-Open Library can resolve exact title/author matches to a **work**; it does not establish a physical edition or ISBN. Enable it with `ENABLE_CATALOGUE_LOOKUP=true`. eBay Browse lookup needs your own application access token and a supported marketplace. Search uses the sweep's delivery country; a foreign seller or currency is not relabeled as a verified local quote. Results are asking-price comparables, exclude shipping/tax, and require physical-format/edition/condition review. No source API key is bundled. With no configured provider, enter source-checked offers through the review form. The app does not auto-accept retailer search matches. Set `ENABLE_LIVE_RESEARCH=true` to retrieve candidate sources during capture; new and used searches run separately. Source review remains required before totals.
+## Measurement and metric scale
 
-Only inventory text is sent to these optional lookup services. Camera images remain on the local backend/Ollama. Market research is bounded to 180 seconds and preserves partial results. Compare the same inventory in a second country after adding its offers; missing quotes remain blank. A real 10-book two-country demonstration still needs those sources.
+Metric scale never comes from a model. During the sweep you tell the agent a known
+dimension and it becomes the scale for the saved frame it refers to:
 
-References: [Open Library Search API](https://openlibrary.org/dev/docs/api/search), [eBay Browse API](https://developer.ebay.com/api-docs/buy/api-browse.html), [eBay filters](https://developer.ebay.com/api-docs/buy/static/ref-buy-browse-filters.html).
+* **"The shelf is 90 centimetres wide."** The span of the detected shelf (or the detected
+  book row) in the latest frame of the current shelf is set to 90 cm; the books standing on
+  it, viewed front-on, show their spine face, so their boxes become height × thickness in
+  cm (`measurement.calibrate_from_shelf`, method `shelf_width`, stored on each book).
+* **"The room is 4.2 by 3.1 metres, ceiling 2.6."** Floor, gross wall and shelved-wall
+  areas in m² and ft² are computed from those figures against the current frame
+  (`scale_method: known_dimensions`, source recorded). An unstated ceiling is assumed at
+  2.4 m and flagged.
 
-## What was kept and changed from the reference
+The same measurements can be posted to `/calibration`, `/spine-bounds`, `/room` and
+`/item-measurement` with explicit pixel points (used by the tests). Shelf run is the sum of
+measured thicknesses. Unknown measurements stay `null` and are queued for review.
 
-Read the [Insurance Claim Live Agent Team](https://github.com/Shubhamsaboo/awesome-llm-apps/tree/main/voice_ai_agents/insurance_claim_live_agent_team) and ran its unmodified FastAPI app in an isolated temporary environment on 2026-10-06: UI, health and session creation returned HTTP 200. Health reported no API key. **The actual Gemini Live conversation was not run**, because no Gemini key was configured. A startup/session check is not a completed voice demo.
+## Pricing (the part that must not be invented)
 
-Kept: server-owned state, role-labelled dialogue, sequential perception/domain-rule stages, live workflow updates, explicit next action, evidence links and audit history. Changed: local YOLO26s/YOLO11s book detection + YOLOE room categories + Apple Vision crop OCR + Qwen2.5-VL 3B crop reading; a library inventory instead of damage intake; deterministic geometry, price evidence and totals; optional continuous camera recording. Dropped: policy lookup, coverage decisions, avatar generation and insurer submission. This is independent domain code, not the reference with a changed prompt; it does not require ADK or Gemini.
+* `pricing/providers/` retrieve candidate **quotes** with source, URL, retrieval date,
+  condition, currency and a title/author match score:
+  **eBay Browse** (new listings → replacement, used listings → used value; median of the
+  matching listings, every comparable kept; tokens fetched from client credentials) and
+  **Google Books** (country-specific list prices; ebook prices are recorded but rejected as
+  physical replacement unless `PRICING_ALLOW_EBOOK_PROXY=true`).
+* `pricing/fx.py` records dated **FX evidence** (Frankfurter/ECB, then ExchangeRate-API) so a
+  quote from another market can be converted and labelled `converted: true` with the rate,
+  URL and date.
+* `pricing/valuation.py` is **deterministic**: operator-checked offers outrank provider
+  quotes, local quotes outrank converted ones, weak matches and ebooks are rejected with a
+  reason, signed/rare/first editions and original art are never priced, and anything at or
+  above the configurable appraisal threshold goes to `needs_appraisal`. Every decision is
+  kept in `price_details` (chosen quote, candidates, rejections) and exposed at
+  `GET /api/sweeps/{id}/prices`.
+* Saying **"compare prices in the United Kingdom"** (or `POST /api/sweeps/{id}/compare-locale`)
+  re-prices the same ten identified books for a second country to show locale is a
+  setting; the table is in the report and `locale_comparison`.
+* Lines without a retrievable quote stay blank, are excluded from totals and appear in the
+  review queue with the reason. Totals are summed in `claim/totals.py`.
 
-## Pipeline / files
+Without eBay credentials most books will have no price: that is reported honestly rather
+than filled in.
 
-- `backend/app/main.py`: transport, streaming progress, persistence, evidence and exports.
-- `backend/app/agent.py`: perception-to-inventory merge, stage records, measurement/pricing/review orchestration and next guidance.
-- `backend/app/local_detector.py`: cached book and room detectors, best-orientation crop OCR, local title proposals and independent box checks.
-- `backend/app/tracking.py`, `item_reader.py`: one-to-one association and reviewable room-category/material/brand proposals.
-- `backend/app/vision.py`: native OCR at 0/90/270 degrees, legacy model experiments and second detector box checks.
-- `backend/model_choices.env`: active model defaults and commented alternatives with observed rejection reasons.
-- `backend/app/conversation.py`: explicit correction tools and source-traced claimant turns. Explicit commands use deterministic tools; open questions use a separate context-aware Ollama dialogue model with recent conversation and inventory state.
-- `backend/app/identification.py`: independently testable OCR identity acceptance gate.
-- `backend/app/validation.py`: deterministic review stage, independent of models and pricing.
-- `backend/app/measurement.py`: reference scale, spine geometry, rectangular/polygon room geometry.
-- `backend/app/pricing.py`: offer validation, currency conversion, appraisal gates and local-quote preference.
-- `backend/app/research.py`: optional work lookup and replaceable `PricingService` / `EbayPricingService` market evidence retrieval.
-- `backend/app/materials.py`, `packet.py`: identified-only materials, concise HTML and decimal monetary subtotals.
-- `frontend/src/App.tsx`, `ReviewTools.tsx`, `recording.ts`: live capture, agent/review UI and camera recording.
-- `backend/tools/evaluate.py`: complete ground-truth scoring; `docs/` contains architecture, limitations and collection instructions.
+## Output contract
 
-Each frame keeps book **and room-item** boxes, per-crop OCR, count comparison and its saved file. Select any inventory line to revisit its historical evidence. A later empty view does not erase earlier observations. OCR uses the best coherent orientation rather than mixing conflicting readings. Local image reading can propose a title when a stylized cover defeats OCR; authors/publishers are constrained to exact OCR text choices. Automatic identity requires exact agreement between crop OCR (confidence ≥0.9), the image title reader and the independent count check, with no partial/fallback box. Other proposals stay unconfirmed. ISBNs must be visibly labelled and checksum-valid; optional Open Library ISBN lookup supplies source-backed metadata. Whole-book boxes are not spine measurements.
+`claim/contract.py` emits the brief's structure with the required keys first and in order:
+`sweep`, `room`, `books`, `items`, `totals`, `review_queue`; extra fields (publisher,
+ft² areas, `price_details`, `locale_comparison`, `evidence_frames`, `performance`, `cost`,
+`methodology`) follow. Unknown numbers are `null`, unknown text is `""`. Every `frame_ref`
+is a saved JPEG under `data/frames/`. Validation (`claim/validation.py`) is rule-based:
+confidence thresholds, price source/URL/date present, currency matches, converted prices
+carry FX evidence, implausible dimensions, duplicates, missing fields.
 
-The room inventory covers shelving, furniture, coffee machines, lamps, framed art, portraits, rugs, electronics and decor using explicit YOLOE prompts. The experimental room image reader is disabled after unreliable batch results. Material and brand stay blank until reviewed from visible evidence or claimant information. Structural negatives (people/doors/windows/walls/floor) are excluded by the detector. Disagreement between the reader and detector stays visible for exclusion rather than silently disappearing. Original art is routed to appraisal unless established as a print.
+## What was kept, changed and discarded from the reference app
 
-**Verify identity and visible details** records title, author, publisher, edition, category, material, brand and artwork type with a source. False positives and duplicates can be excluded with a reason; their evidence remains in JSON. Reviewed identity, measurements and offers survive later matching observations. Association uses crop hashes, color histograms, geometric feature matches and title overlap; it is not an independent physical count. Unreadable visually ambiguous copies may need manual duplicate review.
+The [Insurance Claim Live Agent Team](https://github.com/Shubhamsaboo/awesome-llm-apps/tree/main/voice_ai_agents/insurance_claim_live_agent_team)
+was read and its FastAPI app run locally (UI, health and session endpoints answered; the
+Gemini Live conversation itself needs a Gemini key and was not exercised).
 
-The feature-status panel shows all six assignment areas: capture, books, room contents, measurements, valuation and exports. An implemented form is not evidence that the associated requirement or accuracy threshold has been satisfied. Unknown scale, titles and source prices remain flagged.
+* **Kept:** the interaction pattern — one live session where the claimant talks, the camera
+  is on and a claim file builds itself in real time; server-owned state; background agents
+  that finish the packet; role-labelled transcript; evidence links.
+* **Changed:** Gemini Live replaced by local models and browser speech (any provider would
+  do); narrative damage descriptions replaced by measured, counted and priced inventory;
+  one long prompt replaced by separate testable stages (detection, OCR, identification,
+  measurement, pricing, validation, packet); prices from retrievable sources instead of a
+  model; totals in code.
+* **Discarded:** policy lookup, coverage decisions, avatar generation and insurer submission.
 
-Assignment mapping and outstanding acceptance evidence: [docs/assignment-coverage.md](docs/assignment-coverage.md).
+## Honest status
 
-Measured model trials and remaining detection limits: [docs/model-validation.md](docs/model-validation.md).
-
-## Logs and checks
-
-`[frontend]` events appear in the Vite terminal (development only) and browser console. `[backend]` events appear in Uvicorn, with UTC timestamps, request/sweep/frame IDs, elapsed times and ten-second waiting messages. Logs omit images, raw model replies and transcript text. The packet retains the actual evidence and stage history. Local model API cost is recorded as zero, excluding hardware/electricity and browser speech service costs.
-
-```bash
-cd backend
-.venv/bin/python -m unittest discover -s tests -v
-cd ../frontend
-npm test
-npm run test:logging
-npm run build
-```
-
-Replay a saved frame without overwriting its packet:
-
-```bash
-backend/.venv/bin/python backend/tools/recheck_frame.py data/frames/FRAME.jpg data/diagnostics/recheck.json
-```
-
-## Evidence still required for submission
-
-Collect an enclosed room with at least 60 books, two shelving units and eight non-book items. Record every human-legible title, 20 hand-measured spines, 15 checked prices, the item list and taped room dimensions **before tuning**. Use `docs/ground-truth-format.md` and run the evaluator across the entire sweep. The evaluator cannot collect physical ground truth, prove a demo is unedited, or establish accuracy from unit tests.
-
-The private shared repository, unedited <=6-minute demo including audio, qualifying real packet/evidence bundle, ground-truth results and measured failure report are not yet produced. Do not submit the old captures or synthetic test results as proof that the assignment pass bars are met.
-
-Replay every saved image into a **new** packet (the original is preserved):
-
-```bash
-backend/.venv/bin/python backend/tools/reprocess_sweep.py data/packets/SWEEP_ID.json
-```
-
-Replay latency is reported separately from the original capture duration. On an 8 GB Mac the local vision reader can take tens of seconds for a new view; cached repeated objects are faster. A full-room five-minute completion target is not yet demonstrated.
-
-
-## Submission tools
-
-- **Download packet + evidence ZIP** packages exactly one named `claim_packet.json`, readable HTML, original frames, SHA-256 evidence manifest, and saved ground truth/results when available. Final canonical files also live in `data/claims/<sweep-id>/`.
-- **Ground-truth evaluation** accepts manually collected JSON using `docs/ground-truth-format.md`, saves it and reports all pass bars. Missing objects/samples fail rather than disappear.
-- **Appraisal policy** sets the threshold in the claim currency. Rare/signed/antiquarian books and originals always require appraisal. Unknown object models need a sourced range (or multiple checked comparables).
-- **Record the unedited assignment demo** captures one continuous browser-tab video with shared tab audio and microphone. Enable Share tab audio. It stops at 5:55, preserves the final recording chunk, and downloads locally; it does not edit/stitch a demo. Verify sound and workflow yourself before submission. Browser support varies.
-- `GET /api/sweeps/<id>/performance` reports actual per-stage durations and documented cost scope. Provider charges are unknown rather than reported as zero when eBay is configured.
-
-Development uses Vite's same-origin `/api` and `/data` proxies. After `npm run build`, FastAPI serves the built UI at `http://localhost:8000`. For a phone, serve this same origin through trusted HTTPS; localhost refers to the phone itself, so a separate API needs an explicitly configured reachable `VITE_API_URL` and `CORS_ORIGINS`. No insecure camera bypass is used.
-
-The source repository is [Pankkaj64/cozmo-AI](https://github.com/Pankkaj64/cozmo-AI). Secrets, downloaded models, dependencies and local claim evidence are ignored; evidence ZIPs are shared separately.
-
-
-## Conversational voice
-
-Speak normally to ask questions or follow up: “How many books have you seen?”, “Why is that still unreadable?”, “Would moving closer help?” The dialogue model receives the last twelve turns, selected item, current shelf and observed inventory. It cannot write claim facts or prices. Clear scan commands bypass model latency. Interim speech can interrupt spoken output, and scan guidance waits while a conversational reply is active. Unsupported browsers retain the same conversation through typed input. Set `CONVERSATION_MODEL` to an installed Ollama chat model; default `qwen2.5:3b`. If the model is unavailable, the app says so and keeps the sweep working.
-
-
-## Concise contents exports
-
-The readable report lists books and other named objects. The downloadable `data/claims/<sweep-id>/claim_packet.json` contains only a `materials` array: named books and named room objects, available metadata, status, evidence and measured dimensions. Unknown/unreadable names, uncertain crop checks and conflicting labels are omitted. Proposed readings stay in the internal review inventory. Book titles require OCR/reader agreement and verified book crops; other names require detector/verifier agreement or explicit claimant review. Full inventory, unknown candidates, price sources, review findings and audit data remain in internal `data/packets/<sweep-id>.json` for recovery and evaluation. The evidence ZIP uses the same concise materials JSON.
-
-
-## Crop verification
-
-Fast YOLO localization is retained. A separate blind Gemma 3 4B vision check receives each usable object crop without its detector label. Automatic names require a clear crop, category agreement and distinguishing visible parts. Small crops, invalid responses, timeouts and conflicts remain unverified. Per-frame work is bounded to 90 seconds; remaining candidates are marked deferred and omitted from identified exports. After capture stops, deferred candidates are checked in the background and exports are refreshed when checks finish. The live inventory shows remaining-check progress. Explicit saved-sweep verification also checks every retained candidate without this aggregate deadline.
-
-Four installed models were compared on six identical saved crops before enabling the 4B verifier. See `data/diagnostics/crop-verification/comparison.json`. The 8B model timed out on all six; the 4B model still made wrong guesses. The added parts-support gate and category agreement rejected those diagnostic false names. These are targeted development regressions, not held-out accuracy results.
-
-```bash
-backend/.venv/bin/python backend/tools/compare_crop_models.py --cases data/diagnostics/crop-verification/cases.json --output /tmp/crop-comparison.json --models qwen2.5vl:3b gemma3:latest --timeout 60
-backend/.venv/bin/python backend/tools/verify_saved_sweep.py SWEEP_ID --model gemma3:latest
-```
-
-Verification preserves reviewed facts and saves the original internal packet under `data/diagnostics/crop-verification/` before updating report and materials exports. Restart the backend after changing `backend/model_choices.env`.
+The pipeline, contract, pricing and evaluation are implemented and unit-tested (78 tests).
+The 60-book ground-truth sweep, tape measurements, 15 hand-checked prices, the unedited demo
+video and the measured results sheet still have to be collected in a real room; see
+`docs/assignment-coverage.md` and `docs/failure-log.md` for what has and has not been
+demonstrated. Local inference on an 8 GB laptop is slow (tens of seconds per dense frame);
+the five-minute time-to-packet is recorded per sweep, not assumed.

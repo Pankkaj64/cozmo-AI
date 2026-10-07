@@ -37,3 +37,67 @@ experimental contact-sheet room reader timed out or shifted categories (cup to
 chair), so it is disabled and documented in model_choices.env. No ≥80% room-item
 accuracy claim is made. More suitable local hardware/models or a trained room/
 spine dataset, plus independent ground truth, are still needed for acceptance.
+
+## 7 October 2026: pricing, export contract and portability fixes
+
+4. **The exported `claim_packet.json` dropped required fields.** The download only
+   contained a `materials` array of verified names. Root cause: the export filter written
+   to keep unverified guesses out of the report was also used for the deliverable. Impact:
+   an adjuster could not trace prices, totals or the review queue. Fix: `claim/contract.py`
+   emits the brief's structure (required keys first; unknowns `null`/`""`; totals recomputed
+   in code from the exported lines) and the report is rendered from it. Verified by
+   `tests/test_contract.py` (key order, blanks, totals, sources).
+
+5. **Prices existed only when an operator typed them.** Research returned eBay candidates
+   but nothing applied them, and there was no FX path, so foreign quotes were dropped
+   silently. Fix: provider quotes carry a title/author match score; valuation applies them
+   deterministically (operator > local provider > converted provider), records every
+   rejection reason in `price_details`, converts with dated ECB/ER-API evidence, and
+   re-prices ten books for a second country. Verified with mocked providers in
+   `tests/test_pricing.py`; real quotes still need eBay credentials.
+
+6. **OCR only worked on macOS.** Spine text used an Apple Vision helper compiled with
+   `swiftc`; on any other machine it fell back to an untested path. Fix: `perception/ocr.py`
+   with PaddleOCR (default) or EasyOCR behind one function, selectable with `OCR_ENGINE`.
+   Not yet measured: OCR recall on the 60-book shelf with the new engine.
+
+## 7 October 2026: first real run on the development laptop
+
+7. **Nothing was detected in a live sweep (a held water bottle, three frames).** Every
+   frame carried `Detection failed: ModuleNotFoundError: No module named 'ultralytics'`:
+   the Python that served the API had none of the perception packages, no YOLO weights had
+   been downloaded and Ollama was not running. The guidance line did say "I could not
+   analyse that view", but nothing else in the UI made the failure obvious. Fix: install
+   `requirements.txt` into the interpreter that runs uvicorn, run `tools/setup_detector.py`,
+   start Ollama; `GET /api/health` now reports the configured models. With the stack in
+   place the same kind of frame yields television, chairs, vases, lamp, rug and framed
+   painting on a living-room test image in under three seconds.
+
+8. **PaddleOCR could not be imported on a machine that also had TensorFlow + Keras 3.**
+   `paddleocr` imports `transformers`, which tried to initialise its TensorFlow backend and
+   raised. Fix: `logic/ocr.py` sets `USE_TF=0` before the import. Measured afterwards:
+   PaddleOCR read 5/6 synthetic spines (the miss was text cut off at the strip edge) and real
+   spine fragments ("CATALONIA", "COL-LECCIONS") where EasyOCR read nothing and misread
+   "Dune" as "auna". PaddleOCR stays the default; 0.3-0.4 s per spine once loaded.
+
+9. **Qwen2.5-VL 3B cannot load on an 8 GB Mac.** Ollama's Metal backend failed to allocate
+   a 6.6 GB buffer; with a 1 k context it loaded but took 57-160 s per crop, far beyond the
+   30 s reader timeout, so no title was ever proposed. Fix: Gemma 3 4B is the reader (5/5
+   synthetic titles exact once warm, 8-10 s per crop), the reader timeout allows a cold load,
+   models are kept resident for 30 minutes and warmed at startup. Moondream was tried as a
+   lighter reader: it loaded slowly (four timeouts) and then read 2/2 correctly in 4-6 s.
+
+10. **No book could ever be identified on a full shelf.** The identity gate required the
+    whole frame's book count from YOLO26s and YOLO11s to be equal; on real shelves the two
+    COCO models gave 48 vs 3 and 9 vs 17 boxes. Fix: the check is per book (a second
+    detector drew the same box, IoU >= 0.5); the frame-wide count remains a review note.
+    Also, the YOLOE room detector's "book" boxes were being discarded: on a shop wall it
+    found 18 spines where the COCO detectors found 1-2, and 51 vs 9-17 on a library shelf.
+    They now join the candidates with the detector name recorded as a witness.
+
+11. **The blind crop check rejected every real book.** Gemma 3 4B, asked for the category of a
+    single spine in a stack, answered "table" or marked the crop as not a clear single object,
+    so no book could pass the identity gate. Qwen3-VL 2B agreed on 5/6 real crops with the
+    cover, spine and title text named, but only after `/no_think` was appended to the prompt:
+    its Ollama `think` flag is ignored and the JSON never arrived. Fix: Qwen3-VL 2B is the
+    verifier, Gemma 3 4B the reader, so the two opinions still come from different models.

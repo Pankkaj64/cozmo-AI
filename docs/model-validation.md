@@ -1,3 +1,63 @@
+# Re-measured on 7 October 2026 (Apple silicon, 8 GB RAM, Ollama 0.20.6)
+
+This section supersedes the profile below. Every number is a single run on this laptop with
+the test images in the scratch folder (a stack of eight business books, a shop wall, a library
+shelf, a living room, synthetic spines with known titles). None of it is the 60-book ground
+truth, which still has to be recorded.
+
+## Book boxes (`select_objects`, confidence >= 0.35)
+
+| Photo | YOLO26s | YOLO11s | YOLOE "book" (room detector) | Union of all three |
+| --- | ---: | ---: | ---: | ---: |
+| Stack of 8 books, close | 10 | 8 | 16 | 9 |
+| Shop wall (~150 spines) | 1 | 1 | 18 | 18 |
+| Library shelf (~150 spines) | 9 | 17 | 51 | 51 |
+| Stacked spines (~50) | 47 | 3 | 31 | 52 |
+| Dim library aisle | 0 | 0 | 0 | 0 |
+
+COCO "book" alone misses most shelf spines; the open-vocabulary boxes now join the candidates
+and each detector that drew a box is recorded (`seen_by`). The identity gate takes a second
+detector on the same box (IoU >= 0.5) instead of equal frame-wide counts, which never held on
+real shelves (48 vs 3). Detection costs 0.1-0.3 s per model per frame on CPU.
+
+## OCR (`logic/ocr.py`, best of 0/90/270 degrees)
+
+| Engine | Synthetic spines exact | Real spine fragments | Per spine, warm | Load |
+| --- | ---: | --- | ---: | ---: |
+| PaddleOCR (PP-OCRv6) | 5/6 (miss = text cut at edge) | "CATALONIA", "COL-LECCIONS" | 0.41 s | 53 s |
+| EasyOCR | 4/6 ("Dune" → "auna") | nothing | 0.31 s | 31 s |
+
+PaddleOCR stays the default. Its import needs `USE_TF=0` when TensorFlow + Keras 3 are
+installed; the engine is now warmed at startup so the 15 s OCR frame budget is not spent on
+loading.
+
+## Title reader (`read_visual_title`, JSON schema, temperature 0)
+
+| Model | Synthetic exact | Real stack of 8 | Per crop, warm | Note |
+| --- | ---: | --- | ---: | --- |
+| Qwen2.5-VL 3B | — | — | 57-160 s | Metal cannot allocate its 6.6 GB buffer; loads only with a 1k context |
+| Gemma 3 4B (`gemma3:latest`) | 5/5 after load | ZERO TO ONE + author, ego is the enemy, THE OBSTACLE IS THE WAY, Startup Owner's Manual; 2 of 6 read authors/subtitle as title | 7-10 s | **reader** |
+| Qwen3-VL 2B | 0/6 | 0/6 | 3.6 s | spends the whole budget thinking; schema never returned |
+| Moondream | 2/2 after load | — | 4-6 s | four cold-load timeouts first |
+
+## Blind crop check (`crop_verifier.verify_crop` on the real stack of 8)
+
+| Model | Agreed | Per crop, warm | Note |
+| --- | ---: | ---: | --- |
+| Gemma 3 4B | 0/6 | 8-26 s | "table" or `clear_single_object=false` with only geometric features |
+| Qwen3-VL 2B + `/no_think` | 5/6 | 5-10 s | names cover, spine, title text, author; one output truncated |
+| Moondream | 0/6 | 2-3 s | "bookshelf", "air conditioner" |
+
+Qwen3-VL 2B is the verifier. Alternating it with the Gemma 3 reader on one crop costs about
+12 s + 10 s, so a frame with ten books needs roughly four minutes of crop checks; the frame
+budget (`CROP_VERIFICATION_FRAME_BUDGET_S`) defers the rest to after capture.
+
+## Conversation
+
+`qwen2.5:3b`: 23 s cold load, 0.9 s per answer warm. Kept.
+
+---
+
 # Current profile update
 
 The historical measurements below describe the earlier text-role pipeline. The active profile is now YOLO26s + YOLO11s book boxes, YOLOE26s room candidates, native crop OCR and Qwen2.5-VL 3B cropped title proposals. The separate text-role model and experimental room VLM reader are disabled on this 8 GB machine.
@@ -56,3 +116,9 @@ The existing detector remains the fast localization stage. Six identical saved c
 The 8B requests each timed out after 60 seconds. The 2B model truncated two structured answers. Gemma 4B accepted the TV, but proposed wrong categories elsewhere. Its proposed plant-pot label described only a circular shape/dark colour although no pot was visible. A distinguishing-parts gate now rejects such generic explanations; it was developed after inspecting these outputs and applied uniformly to all saved replies. The larger model is enabled as a separate conservative verifier, not presented as generally more accurate. OCR/reader agreement remains necessary for book identity.
 
 This is a small targeted development diagnostic, not an independent holdout test or qualifying whole-room benchmark. Model agreement can still be wrong. Saved raw replies, crop hashes, labels, errors and limits are in `data/diagnostics/crop-verification/comparison.json`; completed latency excludes the initial runner's timed-out calls. Identified reports omit detector-only, uncertain and conflicting names.
+
+### 7 October 2026: OCR engine change
+
+Apple Vision OCR was removed so the project runs on any machine. Spine crops now go through
+PaddleOCR (default) or EasyOCR (`OCR_ENGINE`). The rotation selection and confidence gates
+are unchanged; recall with the new engine has not been measured yet on the 60-book shelf.

@@ -1,5 +1,6 @@
 .env
 .venv/
+venv/
 node_modules/
 dist/
 __pycache__/
@@ -22,3 +23,6 @@ data/claims/
 *.onnx
 *.safetensors
 backend/mobileclip2_b.ts
+
+# Editor/agent session files
+.claude/
