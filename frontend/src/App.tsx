@@ -8,12 +8,12 @@ import { isSpeaking, listen, speak, stopSpeaking } from "./voice";
 const FRAME_INTERVAL_MS = 2000; // one sampled frame every few seconds while the user walks
 
 export default function App() {
-  // --- setup ---------------------------------------------------------------------------
+  // setup 
   const [locales, setLocales] = useState<Locale[]>([]);
   const [saved, setSaved] = useState<{ id: string; captured_at: string; country: string }[]>([]);
   const [locale, setLocale] = useState<Locale>({ country_code: "AE", country: "United Arab Emirates", currency: "AED" });
   const [threshold, setThreshold] = useState("2000");
-  // --- sweep state -------------------------------------------------------------------
+  // sweep state
   const [sweepId, setSweepId] = useState("");
   const [packet, setPacket] = useState<Packet | null>(null);
   const [running, setRunning] = useState(false);
@@ -35,9 +35,7 @@ export default function App() {
     void get<{ locales: Locale[] }>("/api/sweeps/locales").then((r) => setLocales(r.locales)).catch(() => undefined);
     void get<typeof saved>("/api/sweeps").then(setSaved).catch(() => undefined);
     return () => {
-      void stop();
-    };
-  }, []);
+void stop()}}, []);
 
   // Live updates: the backend streams the packet while frames and background agents run.
   useEffect(() => {
@@ -111,7 +109,10 @@ export default function App() {
 
   async function start() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { 
+        facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }, 
+        audio: false 
+      });
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;

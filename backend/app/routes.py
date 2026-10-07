@@ -19,7 +19,13 @@ from .logic.conversation import Turn, converse
 from .logic.evaluation import evaluate
 from .logic.measurement import Calibration, RoomInput, measure_spine, room_geometry
 from .logic.perception import capture_quality, inspect_frame
-from .logic.pricing import Offer, apply_prices, known_locales, resolve_locale, sweep_locale
+from .logic.pricing import (
+    Offer,
+    apply_prices,
+    known_locales,
+    resolve_locale,
+    sweep_locale,
+)
 from .logic.providers import compare_locale, configured_providers
 from .logic.report import claim_bundle, report_html
 from .logic.utils import event, performance_summary, trace_step
@@ -27,7 +33,10 @@ from .logic.workflow import audit, merge_observations, now, refresh_workflow, st
 
 app = FastAPI(title="Library Contents Claim Agent", version="0.3.0")
 app.add_middleware(
-    CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -42,7 +51,9 @@ async def create_sweep(start: SweepStart):
 @sweeps_router.get("")
 async def list_sweeps():
     records: dict[str, dict] = {}
-    paths = sorted(state.PACKET_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    paths = sorted(
+        state.PACKET_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
     for path in paths[:100]:
         try:
             data = json.loads(path.read_text())
@@ -113,7 +124,9 @@ async def workflow_events(sweep_id: str, request: Request):
 async def stop_capture(sweep_id: str):
     sweep = state.require_sweep(sweep_id)
     sweep.setdefault("capture_stopped", time.time())
-    sweep["packet"]["sweep"]["duration_s"] = round(sweep["capture_stopped"] - sweep["started"])
+    sweep["packet"]["sweep"]["duration_s"] = round(
+        sweep["capture_stopped"] - sweep["started"]
+    )
     state.save_active_sweep(sweep_id)
     return {"stopped_at": sweep["capture_stopped"]}
 
@@ -163,11 +176,15 @@ async def add_frame(
     if image.content_type not in {"image/jpeg"}:
         raise HTTPException(415, "Use a JPEG frame")
     if sweep.get("status") == "finished":
-        raise HTTPException(409, "This sweep has finished; start a new sweep to capture more")
+        raise HTTPException(
+            409, "This sweep has finished; start a new sweep to capture more"
+        )
     if sweep_id in state.ACTIVE_FRAMES:
         raise HTTPException(409, "A frame is already processing for this sweep")
     raw = await image.read(MAX_FRAME_BYTES + 1)
-    event("frame.received", bytes=len(raw), shelf=shelf, content_type=image.content_type)
+    event(
+        "frame.received", bytes=len(raw), shelf=shelf, content_type=image.content_type
+    )
     if len(raw) > MAX_FRAME_BYTES:
         raise HTTPException(413, "Frame must be under 12 MB")
     name = f"{sweep_id}-{uuid.uuid4().hex}.jpg"
@@ -185,7 +202,8 @@ async def add_frame(
         "stage": "perception",
         "shelf": shelf,
         "frame_ref": ref,
-        "guidance": " ".join(quality["warnings"]) or "Reading the spines and checking the count.",
+        "guidance": " ".join(quality["warnings"])
+        or "Reading the spines and checking the count.",
     }
     state.ACTIVE_FRAMES.add(sweep_id)
     try:
@@ -218,7 +236,10 @@ async def save_video(sweep_id: str, video: UploadFile = File(...)):
         raise HTTPException(415, "Use WebM or MP4 camera evidence")
     video_dir = state.ROOT / "data" / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
-    path = video_dir / f"{sweep_id}-{uuid.uuid4().hex}.{'mp4' if mime == 'video/mp4' else 'webm'}"
+    path = (
+        video_dir
+        / f"{sweep_id}-{uuid.uuid4().hex}.{'mp4' if mime == 'video/mp4' else 'webm'}"
+    )
     size = 0
     try:
         with path.open("wb") as output:
@@ -383,14 +404,17 @@ async def price_details(sweep_id: str):
     packet = state.require_packet(sweep_id)
     valuation = apply_prices(packet, write=False)
     return {
-        "locale": sweep_locale(packet).model_dump()
-        if packet["sweep"].get("country") and packet["sweep"].get("currency")
-        else None,
+        "locale": (
+            sweep_locale(packet).model_dump()
+            if packet["sweep"].get("country") and packet["sweep"].get("currency")
+            else None
+        ),
         "providers": [p.name for p in configured_providers()],
         "min_match_score": settings.pricing_min_match,
         "appraisal_threshold": packet.get("appraisal_threshold"),
         "priced_lines": valuation["priced"],
-        "quotes_recorded": len(packet.get("quotes", [])) + len(packet.get("offers", [])),
+        "quotes_recorded": len(packet.get("quotes", []))
+        + len(packet.get("offers", [])),
         "fx_rates": packet.get("fx_rates", {}),
         "details": valuation["details"],
         "locale_comparison": packet.get("locale_comparison"),
@@ -416,7 +440,9 @@ async def compare(sweep_id: str, body: LocaleBody):
         raise HTTPException(422, str(exc)) from exc
     base = sweep_locale(packet)
     if target.matches(base.country, base.currency):
-        raise HTTPException(422, "Choose a different country or currency from the claim locale")
+        raise HTTPException(
+            422, "Choose a different country or currency from the claim locale"
+        )
     with stage(packet, "locale_comparison") as output:
         result = await compare_locale(packet, target)
         output.update(
@@ -456,7 +482,9 @@ class InventoryReview(BaseModel):
 async def review_inventory(sweep_id: str, body: InventoryReview):
     sweep = state.require_sweep(sweep_id)
     if sweep_id in state.ACTIVE_FRAMES:
-        raise HTTPException(409, "Wait for this frame to finish before reviewing inventory")
+        raise HTTPException(
+            409, "Wait for this frame to finish before reviewing inventory"
+        )
     packet = sweep["packet"]
     collection = next(
         (
@@ -494,7 +522,9 @@ async def review_inventory(sweep_id: str, body: InventoryReview):
         line["identity_source"] = evidence
         if body.is_print is not None:
             line["is_print"] = body.is_print
-    packet["review_queue"] = [q for q in packet["review_queue"] if q["ref_id"] != body.ref_id]
+    packet["review_queue"] = [
+        q for q in packet["review_queue"] if q["ref_id"] != body.ref_id
+    ]
     audit(
         packet,
         "inventory.reviewed",
@@ -542,7 +572,9 @@ async def bundle(sweep_id: str):
     return StreamingResponse(
         iter([content]),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="claim-{uuid.UUID(sweep_id)}.zip"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="claim-{uuid.UUID(sweep_id)}.zip"'
+        },
     )
 
 
@@ -562,7 +594,9 @@ async def evaluate_sweep(sweep_id: str, body: GroundTruthSubmission):
     (state.PACKET_DIR / f"{canonical}.ground_truth.json").write_text(
         json.dumps(body.ground_truth, indent=2)
     )
-    (state.PACKET_DIR / f"{canonical}.results.json").write_text(json.dumps(result, indent=2))
+    (state.PACKET_DIR / f"{canonical}.results.json").write_text(
+        json.dumps(result, indent=2)
+    )
     audit(packet, "evaluation.completed", all_pass=result["all_pass"])
     state.save_active_sweep(sweep_id)
     return {"packet": packet, "evaluation": result}
