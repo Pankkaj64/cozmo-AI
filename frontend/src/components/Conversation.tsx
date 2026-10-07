@@ -1,7 +1,11 @@
 import { useState } from "react";
 import type { Packet } from "../types";
 
-type Props = { packet: Packet | null; listening: boolean; onSend: (text: string) => Promise<void> };
+type Props = { 
+  packet: Packet | null; 
+  listening: boolean; 
+  onSend: (text: string) => Promise<void> 
+};
 
 // Transcript of the spoken conversation plus a text box for browsers without speech input.
 export function Conversation({ packet, listening, onSend }: Props) {

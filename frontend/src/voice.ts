@@ -22,6 +22,7 @@ declare global {
 
 let speaking = false;
 
+// agent -> user or text -> voice 
 export function speak(text: string): void {
   if (!("speechSynthesis" in window) || !text) return;
   window.speechSynthesis.cancel();
@@ -35,8 +36,9 @@ export const stopSpeaking = () => window.speechSynthesis?.cancel();
 export const isSpeaking = () => speaking;
 
 /** Start continuous listening. Returns a stop function, or null when unsupported. */
+// user -> agent or voice -> text
 export function listen(onFinal: (text: string) => void, onInterim: () => void): (() => void) | null {
-  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;// some browser supports webkit and some suuport both
   if (!Speech) return null;
   const recognition = new Speech();
   recognition.lang = "en-US";

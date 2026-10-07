@@ -12,6 +12,8 @@ import time
 
 import httpx
 from PIL import Image, ImageFilter, ImageOps, ImageStat
+from ultralytics import YOLO, YOLOE
+from ultralytics import settings as yolo_settings
 
 from ..config import IGNORED_CLASSES, RUNTIME_DIR, settings
 from . import ocr
@@ -57,7 +59,7 @@ DETECTOR_MODEL = settings.detector_model
 VALIDATOR_DETECTOR_MODEL = settings.validator_detector_model
 ROOM_DETECTOR_MODEL = settings.room_detector_model
 BOOK_READER_MODEL = settings.book_reader_model
-OCR_FRAME_BUDGET_S = 15  # bound slow OCR on dense shelves
+OCR_FRAME_BUDGET_S = 10  # bound slow OCR on dense shelves
 MIN_BOX_CONFIDENCE = 0.35
 
 _detectors: dict = {}  # loaded YOLO models, kept in memory between frames
@@ -71,16 +73,14 @@ _ALIASES = {
 }
 
 
-# --- detection -------------------------------------------------------------------------
+# detection
 
 
 def detect_objects(raw: bytes, model_name: str = DETECTOR_MODEL) -> list[dict]:
     """Run one YOLO model on a frame; return normalized boxes with category and confidence."""
     for name in ("ultralytics", "matplotlib"):
         (RUNTIME_DIR / name).mkdir(parents=True, exist_ok=True)
-    # Heavy import kept inside the function so the API (and tests) start without torch.
-    from ultralytics import YOLO, YOLOE
-    from ultralytics import settings as yolo_settings
+    # Heavy import kept inside the function so the API (and tests) start without torch
 
     yolo_settings.update({"sync": False})
     path = RUNTIME_DIR / "models" / model_name
@@ -225,18 +225,27 @@ def _jpeg(image: Image.Image, quality: int = 95) -> bytes:
     return output.getvalue()
 
 
+#
 def read_book_crops(raw: bytes, books: list[dict]) -> list[dict]:
     """OCR each book crop at 0/90/270 degrees and keep one coherent orientation."""
-    image = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
-    started = time.monotonic()
+    image = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert(
+        "RGB"
+    )  # this converts and transpose the raw bytes image to python/PIL image object
+    started = time.monotonic()  # starts the time when OCR started becasue time is set to 15
+
     for index, book in enumerate(books):
         book["ocr_lines"], book["ocr_errors"] = [], []
         if time.monotonic() - started > OCR_FRAME_BUDGET_S:
             book["ocr_errors"].append("OCR frame budget reached; capture a smaller shelf section.")
             continue
-        crop = _crop(image, book["bbox"], pad=4)
-        crop.thumbnail((640, 640))  # spine text stays legible; OCR time drops with pixel count
+
+        crop = _crop(
+            image, book["bbox"], pad=4
+        )  # yolo detect the book and bound the box, crop ectract only that area
+        crop.thumbnail((640, 640))  # ocr cuts to 640 pixels - time increases with increasein pixels
+
         rotations = []
+
         for angle in (0, 90, 270):
             if time.monotonic() - started > OCR_FRAME_BUDGET_S:
                 break  # keep what this book has; the next book gets the budget note
@@ -245,11 +254,13 @@ def read_book_crops(raw: bytes, books: list[dict]) -> list[dict]:
             except Exception as exc:  # noqa: BLE001 - OCR failure must not drop the box
                 book["ocr_errors"].append(f"OCR rotation {angle}: {type(exc).__name__}")
                 break
+
             # Score = total confident characters; mixing orientations would corrupt titles.
             score = sum(len(line["text"]) * line["confidence"] for line in lines)
             rotations.append((score, angle, lines))
             if any(line["confidence"] >= 0.9 and len(line["text"]) >= 4 for line in lines):
                 break  # a confident reading at this angle; the other rotations only cost time
+
         if rotations:
             best = max(rotations, key=lambda entry: entry[0])
             upright = next((r for r in rotations if r[1] == 0), best)
@@ -382,7 +393,7 @@ async def warm_models() -> None:
                 event("model.warm.failed", level="warning", model=model, error=str(exc)[:80])
 
 
-# --- frame pipeline ----------------------------------------------------------------------
+# frame pipeline
 
 
 async def detect_frame_objects(

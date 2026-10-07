@@ -1,3 +1,8 @@
+# Everything the backend needs to run. Install into the same Python you start uvicorn with:
+#   pip install -r requirements.txt
+# Then download the detector weights once:  python tools/setup_detector.py
+# Local language/vision models are pulled with Ollama (see README).
+
 # Web service
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
@@ -6,13 +11,18 @@ httpx>=0.27,<1
 python-dotenv>=1,<2
 pydantic>=2.8,<3
 
-# Images, detection and tracking (ultralytics brings torch, numpy and opencv)
+# Images, detection and tracking (ultralytics installs torch, torchvision, numpy and opencv)
 Pillow>=10,<13
+numpy>=1.26
 ultralytics==8.4.173
-# Text encoder used once by tools/setup_detector.py to fuse the YOLOE room prompts
+# Text encoder used once by tools/setup_detector.py to fuse the YOLOE room-class prompts
 clip @ git+https://github.com/ultralytics/CLIP.git@a13192f8cb767260d7dfd98c843b0716593169e7
 
-# OCR (cross-platform). PaddleOCR is the default engine; EasyOCR is the alternative.
+# OCR. PaddleOCR is the default engine (OCR_ENGINE=paddle); EasyOCR is the alternative
+# (OCR_ENGINE=easyocr). Both are imported by app/logic/ocr.py, so both are installed.
 paddleocr>=3.0,<4
 paddlepaddle>=3.0,<4
-# easyocr>=1.7   # uncomment and set OCR_ENGINE=easyocr if PaddlePaddle will not install
+easyocr>=1.7,<2
+
+# Code formatting and linting (optional for running; used by `ruff check app tools`)
+ruff>=0.6

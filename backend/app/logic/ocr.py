@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import threading
 
+import easyocr  # heavy, loaded on first use
 import numpy as np
+from paddleocr import PaddleOCR
 from PIL import Image
 
 from ..config import settings
@@ -28,15 +29,10 @@ def _load_engine():
         name = settings.ocr_engine
         event("ocr.engine.load", engine=name, lang=settings.ocr_lang)
         if name == "easyocr":
-            import easyocr  # heavy, loaded on first use
-
             _engine = ("easyocr", easyocr.Reader([settings.ocr_lang], gpu=False, verbose=False))
         elif name == "paddle":
             # PaddleOCR imports `transformers`; on machines that also have TensorFlow + Keras 3
             # that import fails unless TensorFlow is switched off first.
-            os.environ.setdefault("USE_TF", "0")
-            os.environ.setdefault("USE_TORCH", "1")
-            from paddleocr import PaddleOCR  # heavy, loaded on first use
 
             _engine = (
                 "paddle",

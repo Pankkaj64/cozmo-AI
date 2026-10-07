@@ -1,4 +1,4 @@
-"""CLI: score a saved packet against a ground-truth JSON file (see docs/ground-truth-format.md)."""
+"""CLI: score a saved packet against a ground-truth JSON file (format described in the README)."""
 
 import argparse
 import json
