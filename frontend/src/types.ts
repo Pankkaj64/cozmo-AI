@@ -58,6 +58,7 @@ export type Packet = {
   } | null;
   performance?: { stages: Record<string, { mean_s: number; calls: number }> };
   verification_progress?: { status: string; completed: number; total: number };
+  live_progress?: { stage: string; shelf?: string; frame_ref?: string; guidance?: string };
 };
 
 export type Locale = { country_code: string; country: string; currency: string };

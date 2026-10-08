@@ -21,6 +21,11 @@ export default function App() {
   const [selected, setSelected] = useState("");
   const [message, setMessage] = useState("Choose the country, then start the sweep.");
   const [listening, setListening] = useState(false);
+  // What the sweep is doing right now, shown as a status strip under the camera.
+  const [inFlight, setInFlight] = useState(false); // a frame is being analysed by the backend
+  const [finishing, setFinishing] = useState(false); // Stop pressed; waiting, then building the packet
+  const [frameStartedAt, setFrameStartedAt] = useState(0);
+  const [, setTick] = useState(0); // re-render twice a second while something is running
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const busyRef = useRef(false);
@@ -55,6 +60,12 @@ void stop()}}, []);
     return () => events.close();
   }, [sweepId, running]);
 
+  useEffect(() => {
+    if (!inFlight && !finishing) return;
+    const timer = window.setInterval(() => setTick((t) => t + 1), 500);
+    return () => window.clearInterval(timer);
+  }, [inFlight, finishing]);
+
   // Capture loop: snapshot the camera and send one JPEG at a time.
   useEffect(() => {
     if (!running || !sweepId) return;
@@ -67,6 +78,8 @@ void stop()}}, []);
     const video = videoRef.current;
     if (!video || busyRef.current || !video.videoWidth) return;
     busyRef.current = true;
+    setInFlight(true);
+    setFrameStartedAt(Date.now());
     try {
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
@@ -83,8 +96,11 @@ void stop()}}, []);
       setMessage(error instanceof Error ? error.message : "Frame upload failed");
     } finally {
       busyRef.current = false;
+      setInFlight(false);
     }
   }
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   // Conversation: every sentence the claimant says goes to the backend, which either runs an
   // explicit tool ("skip this shelf") or answers with the dialogue model; the reply is spoken.
@@ -136,26 +152,59 @@ void stop()}}, []);
   }
 
   async function stop() {
+    if (finishing) return;
     setRunning(false);
     stopListeningRef.current?.();
     setListening(false);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    if (sweepId) {
+    if (!sweepId) return;
+    setFinishing(true);
+    try {
+      // The last frame may still be in the backend; finishing before it returns would be refused.
+      if (busyRef.current) setMessage("Capture stopped. Waiting for the last frame to finish…");
+      while (busyRef.current) await sleep(300);
       await post(`/api/sweeps/${sweepId}/stop-capture`).catch(() => undefined);
       setMessage("Capture stopped. Finishing identification, pricing and the claim packet…");
-      try {
-        // Background stages (research, FX, valuation, validation) run inside /finish.
-        const result = await post<{ packet: Packet }>(`/api/sweeps/${sweepId}/finish`);
-        setPacket(result.packet);
-        const summary = result.packet.sweep.summary || "The claim packet is ready.";
-        setMessage(summary);
-        speak(summary);
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : "Could not build the packet");
+      // Background stages (research, FX, valuation, validation) run inside /finish.
+      let result: { packet: Packet } | null = null;
+      for (let attempt = 0; result === null; attempt++) {
+        try {
+          result = await post<{ packet: Packet }>(`/api/sweeps/${sweepId}/finish`);
+        } catch (error) {
+          const text = error instanceof Error ? error.message : "";
+          // 409 while a frame is still being analysed: wait and try again, up to five minutes.
+          if (!/frame processing/i.test(text) || attempt >= 150) throw error;
+          setMessage("A frame is still being analysed; the packet is built as soon as it is done…");
+          await sleep(2000);
+        }
       }
+      setPacket(result.packet);
+      const summary = result.packet.sweep.summary || "The claim packet is ready.";
+      setMessage(summary);
+      speak(summary);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not build the packet");
+    } finally {
+      setFinishing(false);
     }
   }
+
+  // One line that says what is happening now; the spinner runs only while work is in progress.
+  function status(): { kind: string; text: string } | null {
+    const frames = packet?.frames?.length ?? 0;
+    if (finishing) return { kind: "finishing", text: inFlight ? "Finishing: waiting for the last frame to be analysed…" : "Finishing: catalogue check, pricing and the claim packet…" };
+    if (inFlight) {
+      const seconds = Math.max(0, Math.round((Date.now() - frameStartedAt) / 1000));
+      const detail = packet?.live_progress?.guidance || "detecting books, reading spines, checking the count";
+      return { kind: "processing", text: `Processing frame ${frames + 1} · ${seconds}s · ${detail}` };
+    }
+    if (running) return { kind: "scanning", text: `Scanning · ${frames} frame${frames === 1 ? "" : "s"} analysed · next frame in 2 s · say "next shelf" when you move on` };
+    const after = packet?.verification_progress;
+    if (after?.status === "running") return { kind: "processing", text: `After-capture checks ${after.completed} of ${after.total}…` };
+    return null;
+  }
+  const now = status();
 
   return (
     <main>
@@ -174,11 +223,11 @@ void stop()}}, []);
           <input disabled={!!sweepId} value={threshold} onChange={(e) => setThreshold(e.target.value)} title="appraisal threshold in claim currency" />
           <input value={shelf} onChange={(e) => setShelf(e.target.value)} title="current shelf label" />
           {!running ? (
-            <button onClick={start} disabled={!!sweepId && !!packet?.sweep.finished_at}>Start sweep</button>
+            <button onClick={start} disabled={finishing || (!!sweepId && !!packet?.sweep.finished_at)}>{finishing ? "Finishing…" : "Start sweep"}</button>
           ) : (
-            <button onClick={stop}>Stop sweep → build packet</button>
+            <button onClick={stop} disabled={finishing}>Stop sweep → build packet</button>
           )}
-          <button disabled={!running} onClick={() => void captureFrame()}>Capture now</button>
+          <button disabled={!running || inFlight} onClick={() => void captureFrame()}>{inFlight ? "Processing…" : "Capture now"}</button>
           <select
             disabled={running}
             value=""
@@ -195,6 +244,12 @@ void stop()}}, []);
           </select>
         </div>
         <video ref={videoRef} muted playsInline className={running ? "" : "hidden"} />
+        {now && (
+          <div className={`strip ${now.kind}`} role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            <span>{now.text}</span>
+          </div>
+        )}
         <p className="message">{message}</p>
       </section>
 
