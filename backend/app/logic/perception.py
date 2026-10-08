@@ -59,7 +59,7 @@ DETECTOR_MODEL = settings.detector_model
 VALIDATOR_DETECTOR_MODEL = settings.validator_detector_model
 ROOM_DETECTOR_MODEL = settings.room_detector_model
 BOOK_READER_MODEL = settings.book_reader_model
-OCR_FRAME_BUDGET_S = 10  # floor: a sparse frame always gets this much OCR time
+OCR_FRAME_BUDGET_S = 30  # floor: a few large books still need every rotation and language
 OCR_SECONDS_PER_SPINE = 1.5  # the budget grows with the number of detected spines ...
 OCR_FRAME_BUDGET_MAX_S = 60  # ... up to this cap, so a dense wall cannot stall the sweep
 # Tiled detection finds thin spines at a larger scale but, measured on a worn shelf, it added
@@ -68,8 +68,10 @@ DETECTOR_TILES = os.getenv("DETECTOR_TILES", "false").strip().lower() in {"1", "
 
 
 def ocr_budget_s(spines: int) -> float:
-    """OCR time allowed for one frame: scales with the spine count between floor and cap."""
-    return min(OCR_FRAME_BUDGET_MAX_S, max(OCR_FRAME_BUDGET_S, OCR_SECONDS_PER_SPINE * spines))
+    """Per-frame OCR time: grows with the spine count and with each extra OCR language."""
+    languages = 1 + len(settings.ocr_extra_langs)  # a weak crop is read once per language
+    per_frame = max(OCR_FRAME_BUDGET_S, OCR_SECONDS_PER_SPINE * spines) * languages
+    return min(OCR_FRAME_BUDGET_MAX_S * languages, per_frame)
 
 
 MIN_BOX_CONFIDENCE = 0.35
@@ -285,6 +287,45 @@ def _jpeg(image: Image.Image, quality: int = 95) -> bytes:
 
 
 #
+def confident(rotations: list) -> bool:
+    """A line read at >= 0.9 with at least four characters at any of the tried angles."""
+    return any(
+        line["confidence"] >= 0.9 and len(line["text"]) >= 4
+        for _, _, lines in rotations
+        for line in lines
+    )
+
+
+def pick_rotation(rotations: list) -> tuple | None:
+    """Best scoring angle; upright wins when it scores at least 75 % of the best."""
+    if not rotations:
+        return None
+    best = max(rotations, key=lambda entry: entry[0])
+    upright = next((r for r in rotations if r[1] == 0), best)
+    return upright if upright[0] >= best[0] * 0.75 else best
+
+
+def read_rotations(crop, lang, book, started, budget, angles=(0, 90, 270, 180)) -> list:
+    """OCR one crop at the given angles in one language, stopping at the first confident one."""
+    rotations = []
+    for angle in angles:  # 180 last: only reached when nothing confident was read
+        if time.monotonic() - started > budget:
+            break  # keep what this book has; the next book gets the budget note
+        try:
+            lines = ocr.read_text(_jpeg(crop.rotate(angle, expand=True)), lang)
+        except Exception as exc:  # noqa: BLE001 - OCR failure must not drop the box
+            book["ocr_errors"].append(
+                f"OCR {lang or settings.ocr_lang} rotation {angle}: {type(exc).__name__}"
+            )
+            break
+        # Score = total confident characters; mixing orientations would corrupt titles.
+        score = sum(len(line["text"]) * line["confidence"] for line in lines)
+        rotations.append((score, angle, lines))
+        if any(line["confidence"] >= 0.9 and len(line["text"]) >= 4 for line in lines):
+            break  # a confident reading at this angle; the other rotations only cost time
+    return rotations
+
+
 def read_book_crops(raw: bytes, books: list[dict]) -> list[dict]:
     """OCR each book crop at 0/90/270 degrees and keep one coherent orientation."""
     image = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert(
@@ -304,29 +345,39 @@ def read_book_crops(raw: bytes, books: list[dict]) -> list[dict]:
         )  # yolo detect the book and bound the box, crop ectract only that area
         crop = prepare_spine(crop)  # upscale thin spines and stretch contrast for worn lettering
 
-        rotations = []
+        # The primary model reads other scripts as garbage ("अमीश" -> "3TH2T"). So when the
+        # upright primary read is weak, each extra language is tried upright next, before
+        # spending time on rotations; the rotations then run only for the language that fits.
+        lang = settings.ocr_lang
+        rotations = read_rotations(crop, None, book, started, budget, angles=(0,))
+        if not confident(rotations):
+            upright = {
+                extra: read_rotations(crop, extra, book, started, budget, angles=(0,))
+                for extra in settings.ocr_extra_langs
+            }
+            hit = next((extra for extra, rot in upright.items() if confident(rot)), None)
+            if hit:
+                rotations, lang = upright[hit], hit
+            else:
+                rotations += read_rotations(
+                    crop, None, book, started, budget, angles=(90, 270, 180)
+                )
+                for extra, first in upright.items():
+                    if confident(rotations):
+                        break
+                    other = first + read_rotations(
+                        crop, extra, book, started, budget, angles=(90, 270, 180)
+                    )
+                    best_other, best_now = pick_rotation(other), pick_rotation(rotations)
+                    if other and (confident(other) or not best_now or best_other[0] > best_now[0]):
+                        rotations, lang = other, extra
+        chosen = pick_rotation(rotations)
 
-        for angle in (0, 90, 270, 180):  # 180 last: only reached when nothing confident was read
-            if time.monotonic() - started > budget:
-                break  # keep what this book has; the next book gets the budget note
-            try:
-                lines = ocr.read_text(_jpeg(crop.rotate(angle, expand=True)))
-            except Exception as exc:  # noqa: BLE001 - OCR failure must not drop the box
-                book["ocr_errors"].append(f"OCR rotation {angle}: {type(exc).__name__}")
-                break
-
-            # Score = total confident characters; mixing orientations would corrupt titles.
-            score = sum(len(line["text"]) * line["confidence"] for line in lines)
-            rotations.append((score, angle, lines))
-            if any(line["confidence"] >= 0.9 and len(line["text"]) >= 4 for line in lines):
-                break  # a confident reading at this angle; the other rotations only cost time
-
-        if rotations:
-            best = max(rotations, key=lambda entry: entry[0])
-            upright = next((r for r in rotations if r[1] == 0), best)
-            _, angle, lines = upright if upright[0] >= best[0] * 0.75 else best
-            book["ocr_lines"] = [dict(line, angle=angle) for line in lines]
+        if chosen:
+            _, angle, lines = chosen
+            book["ocr_lines"] = [dict(line, angle=angle, lang=lang) for line in lines]
             book["ocr_orientation"] = angle
+            book["ocr_lang"] = lang
         print(
             f"[DEBUG {stamp()}] ocr.crop.complete book={index + 1} readable_lines={len(book['ocr_lines'])}",
             flush=True,
@@ -452,7 +503,8 @@ async def warm_models() -> None:
 
 async def _warm_models() -> None:
     try:
-        await asyncio.to_thread(ocr._load_engine)
+        for lang in [settings.ocr_lang, *settings.ocr_extra_langs]:
+            await asyncio.to_thread(ocr._load_engine, lang)  # Hindi too, so frame one is not slow
     except Exception as exc:  # noqa: BLE001
         print(f"[WARN {stamp()}] ocr.warm.failed error={str(exc)[:80]}", flush=True)
     models = dict.fromkeys(

@@ -14,32 +14,29 @@ from PIL import Image
 from ..config import settings
 from .utils import stamp
 
-# One engine instance per process; loading weights is slow, reading is cheap.
-_engine = None
+# One engine per language per process; loading weights is slow, reading is cheap.
+_engines: dict[str, tuple[str, object]] = {}
 _lock = threading.Lock()
 MIN_CONFIDENCE = 0.5
 
 
-def _load_engine():
-    """Create the configured OCR engine once (imports stay lazy: they are heavy)."""
-    global _engine
+def _load_engine(lang: str | None = None):
+    """Create the OCR engine for `lang` once (the configured language when not given)."""
+    lang = lang or settings.ocr_lang
     with _lock:
-        if _engine is not None:
-            return _engine
+        if lang in _engines:
+            return _engines[lang]
         name = settings.ocr_engine
-        print(
-            f"[DEBUG {stamp()}] ocr.engine.load engine={name} lang={settings.ocr_lang}", flush=True
-        )
+        print(f"[DEBUG {stamp()}] ocr.engine.load engine={name} lang={lang}", flush=True)
         if name == "easyocr":
-            _engine = ("easyocr", easyocr.Reader([settings.ocr_lang], gpu=False, verbose=False))
+            # EasyOCR's Devanagari models are trained together with English.
+            langs = [lang] if lang == "en" else [lang, "en"]
+            engine = ("easyocr", easyocr.Reader(langs, gpu=False, verbose=False))
         elif name == "paddle":
-            # PaddleOCR imports `transformers`; on machines that also have TensorFlow + Keras 3
-            # that import fails unless TensorFlow is switched off first.
-
-            _engine = (
+            engine = (
                 "paddle",
                 PaddleOCR(
-                    lang=settings.ocr_lang,
+                    lang=lang,
                     use_doc_orientation_classify=False,
                     use_doc_unwarping=False,
                     use_textline_orientation=False,
@@ -47,7 +44,8 @@ def _load_engine():
             )
         else:
             raise ValueError(f"Unknown OCR_ENGINE: {name!r} (use 'paddle' or 'easyocr')")
-        return _engine
+        _engines[lang] = engine
+        return engine
 
 
 def _paddle_lines(engine, image: np.ndarray) -> list[dict]:
@@ -70,9 +68,9 @@ def _easyocr_lines(engine, image: np.ndarray) -> list[dict]:
     ]
 
 
-def read_text(image_bytes: bytes) -> list[dict]:
+def read_text(image_bytes: bytes, lang: str | None = None) -> list[dict]:
     """Return ``[{"text", "confidence"}]`` for one image, keeping only confident lines."""
-    kind, engine = _load_engine()
+    kind, engine = _load_engine(lang)
     image = np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
     with _lock:  # engines are not thread-safe
         lines = _paddle_lines(engine, image) if kind == "paddle" else _easyocr_lines(engine, image)

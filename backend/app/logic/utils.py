@@ -21,9 +21,14 @@ def stamp() -> str:
 WAIT_LOG_INTERVAL = 10
 
 
+# `\w` alone drops combining marks, which splits Hindi words ("श्रीमद्भगवद्गीता" -> "श र मद ...");
+# the Indic blocks (U+0900-U+0DFF) and combining diacritics are kept as part of a word.
+WORD = re.compile(r"[\w\u0300-\u036F\u0900-\u0DFF\u1CD0-\u1CFF\uA8E0-\uA8FF]+")
+
+
 def normalized(value) -> str:
     """Lower-cased words only; shared by matching, tracking and catalogue code."""
-    return " ".join(re.findall(r"\w+", str(value or "").casefold()))
+    return " ".join(WORD.findall(str(value or "").casefold()))
 
 
 def trace_step(name: str):

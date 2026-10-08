@@ -134,6 +134,16 @@ class Settings:
     def ocr_lang(self) -> str:
         return os.getenv("OCR_LANG", "en")
 
+    @property
+    def ocr_extra_langs(self) -> list[str]:
+        """Languages tried on a crop when the primary OCR reads nothing confident ('hi' = Hindi)."""
+        raw = os.getenv("OCR_EXTRA_LANGS", "hi")
+        return [
+            lang.strip()
+            for lang in raw.split(",")
+            if lang.strip() and lang.strip() != self.ocr_lang
+        ]
+
     # --- pricing and catalogue sources -------------------------------------------------
     @property
     def enable_catalogue_lookup(self) -> bool:
