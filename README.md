@@ -22,6 +22,8 @@ Documents (PDF, charts included) in [`docs/pdf/`](docs/pdf/):
 | [failure-log.pdf](docs/pdf/failure-log.pdf) | what broke, root causes, measured fixes, cost and latency |
 | [next-week-plan.pdf](docs/pdf/next-week-plan.pdf) | the improvements planned for the next week, with what is already done |
 | [pricing-api-keys.pdf](docs/pdf/pricing-api-keys.pdf) | why price keys are used, free limits, how to create them step by step |
+| [Pankaj-Yadav-Resume.pdf](docs/pdf/Pankaj-Yadav-Resume.pdf) | the author's resume |
+| [Pankaj-Yadav-Resume-AI-Agent-Engineer.docx](docs/Pankaj-Yadav-Resume-AI-Agent-Engineer.docx) | the resume tailored to this role (live voice-and-vision agents), editable Word file |
 
 ## Features
 
@@ -225,6 +227,38 @@ real spine crops where Gemma called them "table"; PaddleOCR read real spine frag
 EasyOCR read nothing; the YOLOE book boxes found 18–51 spines per shelf wall where the COCO
 models found 1–17. Qwen3-VL only answers when the prompt ends with `/no_think`.
 
+## Why small local models, not bigger ones
+
+The system is built and measured on an **Apple M3 laptop with 8 GB of memory**, and the brief
+expects a reviewer to run it from the README on their own laptop. On Apple silicon the CPU
+and GPU share that 8 GB, so every model competes with macOS, the browser and the backend.
+
+| What is loaded | Memory |
+| --- | --- |
+| Gemma 3 4B (title reader) | 3.3 GB |
+| Qwen3-VL 2B (blind check) | 1.9 GB on disk, 2.7 GB once loaded |
+| Qwen2.5 3B (conversation) | 1.9 GB |
+| Three YOLO detectors | about 70 MB |
+| PaddleOCR, English and Hindi | about 220 MB |
+| macOS, the browser and the backend | the rest of the 8 GB |
+
+- **A bigger vision model does not fit.** Qwen2.5-VL 3B, the first choice, cannot load:
+  Ollama's Metal backend asks for a 6.6 GB buffer. With a 1k context it loaded but took
+  57–160 s per crop. 7B and larger vision models need more memory than the machine has.
+- **The small models already fill the memory.** Together they need about 7 GB, so macOS
+  swaps when all three are active. That is why OCR took 107 s for one frame inside the app
+  but 2–8 s per crop on its own, and why each model gets a per-frame time budget.
+- **Hosted large models were rejected on purpose.** A cloud model (GPT-4o, Gemini, Claude)
+  would read worn spines better, but every frame of the claimant's home would leave the
+  device, each sweep would cost money per frame, and a network round trip would sit in the
+  live loop. Running locally keeps model cost at zero and the video on the laptop.
+- **What this costs.** Small models read fewer worn titles. The design compensates by
+  refusing rather than guessing: a title needs two independent readings, so a weaker model
+  lowers the identification rate but not its honesty.
+- **Swapping is configuration only.** On a machine with 16 GB or more, or a GPU, larger
+  models can be set with `BOOK_READER_MODEL`, `CROP_VERIFIER_MODEL` and `CONVERSATION_MODEL`
+  in `backend/.env`; no code changes.
+
 ## Measurement and metric scale
 
 Metric scale never comes from a model. "The shelf is 90 centimetres wide" sets the span of
@@ -356,3 +390,11 @@ network calls and are free tiers (call counts are recorded per sweep in `cost`).
   with a review finding. That last check needs the network.
 - The 60-book ground-truth sweep, tape measurements, hand-checked prices and the demo video
   still have to be recorded in a real room.
+
+## Author
+
+Pankaj Yadav, Forward Deployed Software Engineer (Python, Linux and computer vision), Dubai.
+[github.com/Pankkaj64](https://github.com/Pankkaj64) ·
+[linkedin.com/in/pankkaj64](https://linkedin.com/in/pankkaj64) · resume in
+[`docs/pdf/Pankaj-Yadav-Resume.pdf`](docs/pdf/Pankaj-Yadav-Resume.pdf).
+
