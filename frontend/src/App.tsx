@@ -21,6 +21,8 @@ export default function App() {
   const [selected, setSelected] = useState("");
   const [message, setMessage] = useState("Choose the country, then start the sweep.");
   const [listening, setListening] = useState(false);
+  // Two pages: the sweep (camera + live chat) and the inventory (lines + claim packet).
+  const [view, setView] = useState<"sweep" | "inventory">(window.location.hash === "#inventory" ? "inventory" : "sweep");
   // What the sweep is doing right now, shown as a status strip under the camera.
   const [inFlight, setInFlight] = useState(false); // a frame is being analysed by the backend
   const [finishing, setFinishing] = useState(false); // Stop pressed; waiting, then building the packet
@@ -39,6 +41,10 @@ export default function App() {
   useEffect(() => {
     void get<{ locales: Locale[] }>("/api/sweeps/locales").then((r) => setLocales(r.locales)).catch(() => undefined);
     void get<typeof saved>("/api/sweeps").then(setSaved).catch(() => undefined);
+    // After a reload, reopen the sweep that was on screen (its id is kept for this browser tab).
+    let remembered = "";
+    try { remembered = sessionStorage.getItem("sweepId") ?? ""; } catch { /* storage blocked */ }
+    if (remembered) void get<Packet>(`/api/sweeps/${remembered}`).then((p) => { setSweepId(remembered); setPacket(p); }).catch(() => undefined);
     return () => {
 void stop()}}, []);
 
@@ -59,6 +65,18 @@ void stop()}}, []);
     };
     return () => events.close();
   }, [sweepId, running]);
+
+  useEffect(() => {
+    try { if (sweepId) sessionStorage.setItem("sweepId", sweepId); } catch { /* storage blocked */ }
+  }, [sweepId]);
+
+  useEffect(() => {
+    const onHash = () => setView(window.location.hash === "#inventory" ? "inventory" : "sweep");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const openInventory = () => { window.location.hash = "inventory"; };
+  const backToSweep = () => { window.location.hash = ""; };
 
   useEffect(() => {
     if (!inFlight && !finishing) return;
@@ -140,6 +158,8 @@ void stop()}}, []);
       });
       setSweepId(result.sweep_id);
       setPacket(result.packet);
+      setSelected("");
+      lastGuidanceRef.current = "";
       setRunning(true);
       const greeting = `Hello. We are documenting a contents claim in ${locale.country}, in ${locale.currency}. Walk the room once and pan slowly across every shelf, wall and floor area. I will tell you what I am logging and ask you to slow down or move closer when spines are unreadable. Say "next shelf" when you move on.`;
       setMessage(greeting);
@@ -206,71 +226,146 @@ void stop()}}, []);
   }
   const now = status();
 
+  const finished = !!packet?.sweep.finished_at;
+  const t = packet?.totals ?? {};
+  const statusPill = (
+    <span className={`pill ${now?.kind ?? (finished ? "done" : "")}`}>
+      {now ? now.kind[0].toUpperCase() + now.kind.slice(1) : finished ? "Packet ready" : "Ready"}
+    </span>
+  );
+
+  if (view === "inventory") {
+    return (
+      <main className="page-inventory">
+        <header>
+          <div className="row">
+            <button className="secondary" onClick={backToSweep}>← Back to sweep</button>
+            <div>
+              <h1>Inventory</h1>
+              <p className="muted">{packet ? `${packet.sweep.country} · ${packet.sweep.currency} · sweep ${packet.sweep.id.slice(0, 8)}` : "No sweep loaded."}</p>
+            </div>
+          </div>
+          {statusPill}
+        </header>
+        {packet ? (
+          <>
+            {finished && (
+              <section className="card">
+                <h2>Claim packet</h2>
+                <p className="message">{packet.sweep.summary || "The claim packet is ready."}</p>
+                <div className="links" style={{ marginTop: 10 }}>
+                  <a href={fileUrl(`data/claims/${packet.sweep.id}/claim_packet.json`)} target="_blank" rel="noreferrer">claim_packet.json</a>
+                  <a href={`${API}/api/sweeps/${packet.sweep.id}/report`} target="_blank" rel="noreferrer">report.html</a>
+                  <a href={`${API}/api/sweeps/${packet.sweep.id}/bundle`}>evidence bundle (zip)</a>
+                  <a href={`${API}/api/sweeps/${packet.sweep.id}/prices`} target="_blank" rel="noreferrer">price details</a>
+                </div>
+                <p className="muted" style={{ marginTop: 10 }}>{packet.review_queue.length} review findings. Go back to the sweep and say "compare prices in the United Kingdom" to price ten books for a second country.</p>
+              </section>
+            )}
+            <Inventory packet={packet} selected={selected} onSelect={setSelected} />
+          </>
+        ) : (
+          <section className="card"><p className="muted">Start a sweep or review a saved one first.</p></section>
+        )}
+      </main>
+    );
+  }
+
   return (
     <main>
       <header>
-        <h1>Library Contents Claim Agent</h1>
-        <p className="muted">One continuous sweep: talk to the agent while you pan across every shelf, wall and floor.</p>
+        <div>
+          <h1>Library Contents Claim Agent</h1>
+          <p className="muted">One continuous sweep: talk to the agent while you pan across every shelf, wall and floor.</p>
+        </div>
+        <div className="row">
+          {statusPill}
+          <button onClick={openInventory} disabled={!finished} title={finished ? "Open the inventory and claim packet" : "Available once the sweep is finished"}>
+            Inventory &amp; packet →
+          </button>
+        </div>
       </header>
 
-      <section className="card">
-        <div className="row">
-          <select disabled={!!sweepId} value={locale.country_code} onChange={(e) => setLocale(locales.find((l) => l.country_code === e.target.value) ?? locale)}>
-            {(locales.length ? locales : [locale]).map((l) => (
-              <option key={l.country_code} value={l.country_code}>{l.country} · {l.currency}</option>
-            ))}
-          </select>
-          <input disabled={!!sweepId} value={threshold} onChange={(e) => setThreshold(e.target.value)} title="appraisal threshold in claim currency" />
-          <input value={shelf} onChange={(e) => setShelf(e.target.value)} title="current shelf label" />
-          {!running ? (
-            <button onClick={start} disabled={finishing || (!!sweepId && !!packet?.sweep.finished_at)}>{finishing ? "Finishing…" : "Start sweep"}</button>
-          ) : (
-            <button onClick={stop} disabled={finishing}>Stop sweep → build packet</button>
-          )}
-          <button disabled={!running || inFlight} onClick={() => void captureFrame()}>{inFlight ? "Processing…" : "Capture now"}</button>
-          <select
-            disabled={running}
-            value=""
-            onChange={(e) => {
-              // Reopen a saved sweep for review (no camera needed).
-              const id = e.target.value;
-              if (id) void get<Packet>(`/api/sweeps/${id}`).then((p) => { setSweepId(id); setPacket(p); setMessage("Loaded saved sweep for review."); });
-            }}
-          >
-            <option value="">Review saved sweep…</option>
-            {saved.map((s) => (
-              <option key={s.id} value={s.id}>{s.captured_at.slice(0, 16)} · {s.country} · {s.id.slice(0, 8)}</option>
-            ))}
-          </select>
-        </div>
-        <video ref={videoRef} muted playsInline className={running ? "" : "hidden"} />
-        {now && (
-          <div className={`strip ${now.kind}`} role="status" aria-live="polite">
-            <span className="spinner" aria-hidden="true" />
-            <span>{now.text}</span>
-          </div>
-        )}
-        <p className="message">{message}</p>
-      </section>
-
-      {packet && (
-        <>
-          <Inventory packet={packet} selected={selected} onSelect={setSelected} />
-          <Conversation packet={packet} listening={listening} onSend={sendTurn} />
-          {packet.sweep.finished_at && (
-            <section className="card">
-              <h2>Claim packet</h2>
-              <p className="row">
-                <a href={fileUrl(`data/claims/${packet.sweep.id}/claim_packet.json`)} target="_blank" rel="noreferrer">claim_packet.json</a>
-                <a href={`${API}/api/sweeps/${packet.sweep.id}/report`} target="_blank" rel="noreferrer">report.html</a>
-                <a href={`${API}/api/sweeps/${packet.sweep.id}/bundle`}>evidence bundle (zip)</a>
-                <a href={`${API}/api/sweeps/${packet.sweep.id}/prices`} target="_blank" rel="noreferrer">price details</a>
+      <div className="layout">
+        <div className="column">
+          <section className="card">
+            <div className="fields">
+              <label className="field">
+                Country · currency
+                <select disabled={running || finishing} value={locale.country_code} onChange={(e) => setLocale(locales.find((l) => l.country_code === e.target.value) ?? locale)}>
+                  {(locales.length ? locales : [locale]).map((l) => (
+                    <option key={l.country_code} value={l.country_code}>{l.country} · {l.currency}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                Appraisal threshold
+                <input disabled={running || finishing} value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="numeric" title="items above this value need a professional appraisal" />
+              </label>
+              <label className="field">
+                Current shelf
+                <input value={shelf} onChange={(e) => setShelf(e.target.value)} title="label for the frames captured now" />
+              </label>
+            </div>
+            <div className="toolbar">
+              <div className="actions">
+                {!running ? (
+                  <button onClick={start} disabled={finishing}>{finishing ? "Finishing…" : finished ? "Start new sweep" : "Start sweep"}</button>
+                ) : (
+                  <button className="stop" onClick={stop} disabled={finishing}>Stop sweep · build packet</button>
+                )}
+                <button className="secondary" disabled={!running || inFlight} onClick={() => void captureFrame()}>{inFlight ? "Processing…" : "Capture now"}</button>
+              </div>
+              <label className="field">
+                Review a saved sweep
+                <select
+                  disabled={running}
+                  value=""
+                  onChange={(e) => {
+                    // Reopen a saved sweep for review (no camera needed).
+                    const id = e.target.value;
+                    if (id) void get<Packet>(`/api/sweeps/${id}`).then((p) => { setSweepId(id); setPacket(p); setMessage("Loaded saved sweep for review."); });
+                  }}
+                >
+                  <option value="">Choose…</option>
+                  {saved.map((s) => (
+                    <option key={s.id} value={s.id}>{s.captured_at.slice(0, 16)} · {s.country} · {s.id.slice(0, 8)}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="camera">
+              <video ref={videoRef} muted playsInline className={running ? "" : "hidden"} />
+              {!running && (
+                <div className="placeholder">
+                  {finished ? "Sweep finished. Open the inventory, or start a new sweep." : "The camera preview appears here when you start the sweep."}
+                </div>
+              )}
+              {running && <span className="shelf-tag">{shelf}</span>}
+            </div>
+            {now && (
+              <div className={`strip ${now.kind}`} role="status" aria-live="polite">
+                <span className="spinner" aria-hidden="true" />
+                <span>{now.text}</span>
+              </div>
+            )}
+            <p className="message">{message}</p>
+            {packet && (
+              <p className="live-counts">
+                <span><b>{t.book_count ?? 0}</b> books</span>
+                <span><b>{t.books_identified ?? 0}</b> identified</span>
+                <span><b>{packet.items.length}</b> items</span>
+                <span><b>{packet.review_queue.length}</b> to review</span>
+                {finished && <button className="link" onClick={openInventory}>open inventory →</button>}
               </p>
-              <p className="muted">{packet.review_queue.length} review findings. Say "compare prices in the United Kingdom" to price ten books for a second country.</p>
-            </section>
-          )}
-        </>
-      )}
+            )}
+          </section>
+        </div>
+
+        <div className="column">
+          <Conversation packet={packet} listening={listening} onSend={sendTurn} selected={selected} onClearSelection={() => setSelected("")} />
+        </div>
+      </div>
     </main>
   );
 }

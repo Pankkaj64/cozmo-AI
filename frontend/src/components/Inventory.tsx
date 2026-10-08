@@ -15,7 +15,7 @@ const pct = (value?: number) => (value == null ? "" : `${Math.round(value * 100)
 export function Inventory({ packet, selected, onSelect }: Props) {
   const t = packet.totals;
   const row = (id: string, name: string, meta: string, status: string, price: string) => (
-    <li key={id} className={id === selected ? "selected" : ""} onClick={() => onSelect(id)}>
+    <li key={id} className={id === selected ? "selected" : ""} onClick={() => onSelect(id === selected ? "" : id)} title="Select, then tell the agent about it (e.g. “that is a first edition”)">
       <span className="name">{name}</span>
       <span className="meta">{meta}</span>
       <span className={`status ${status}`}>{status.replace("_", " ")}</span>
@@ -24,16 +24,17 @@ export function Inventory({ packet, selected, onSelect }: Props) {
   );
   return (
     <section className="card">
-      <h2>Inventory</h2>
+      <h2>Inventory {selected && <span className="muted">· one line selected for the agent</span>}</h2>
       <div className="counters">
         <div><b>{t.book_count ?? 0}</b> books detected</div>
         <div><b>{t.books_identified ?? 0}</b> identified</div>
         <div><b>{t.books_unidentified ?? 0}</b> unreadable</div>
-        <div><b>{packet.items.length}</b> items</div>
-        <div><b>{packet.review_queue.length}</b> need review</div>
+        <div><b>{packet.items.length}</b> other items</div>
+        <div className={packet.review_queue.length ? "warn" : ""}><b>{packet.review_queue.length}</b> need review</div>
       </div>
       <h3>Books</h3>
       <ul className="lines">
+        {packet.books.length === 0 && <li className="empty">No books detected yet. Pan slowly along the spines.</li>}
         {packet.books.map((b: Book) =>
           row(
             b.id,
@@ -46,6 +47,7 @@ export function Inventory({ packet, selected, onSelect }: Props) {
       </ul>
       <h3>Other items</h3>
       <ul className="lines">
+        {packet.items.length === 0 && <li className="empty">No other items yet. Include the walls and floor in the sweep.</li>}
         {packet.items.map((i: Item) =>
           row(i.id, i.category, [i.description, pct(i.confidence)].filter(Boolean).join(" · "), i.status, money(i.replacement_cost)),
         )}

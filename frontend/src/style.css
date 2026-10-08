@@ -1,32 +1,227 @@
-/* Deliberately plain: the assignment scores function, not polish. */
-:root { font: 15px/1.45 system-ui, sans-serif; color: #1b2420; background: #f6f7f5; }
+/* Calm, legible, one accent colour. Function first: every element here is used during a sweep. */
+:root {
+  --bg: #f3f5f3;
+  --surface: #ffffff;
+  --border: #dfe5e0;
+  --text: #17211c;
+  --muted: #66736c;
+  --accent: #15563f;
+  --accent-soft: #e6f1ea;
+  --amber: #8a5a00;
+  --amber-soft: #fff3d6;
+  --blue: #1f3a8a;
+  --blue-soft: #e8eefc;
+  --danger: #a33a2f;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(23, 33, 28, 0.06), 0 4px 14px rgba(23, 33, 28, 0.05);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+* { box-sizing: border-box; }
 body { margin: 0; }
-main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; }
-h1 { font-size: 22px; margin: 0; } h2 { font-size: 17px; margin: 0 0 8px; } h3 { font-size: 14px; margin: 14px 0 6px; }
-.card { background: #fff; border: 1px solid #dde2de; border-radius: 8px; padding: 12px; }
-.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-input, select, button { font: inherit; padding: 6px 8px; border: 1px solid #c9d1cb; border-radius: 6px; background: #fff; }
-button { background: #15563f; color: #fff; border-color: #15563f; cursor: pointer; }
-button:disabled { opacity: 0.5; cursor: default; }
-video { width: 100%; max-height: 420px; background: #000; border-radius: 6px; margin-top: 8px; }
+main { max-width: 1180px; margin: 0 auto; display: grid; gap: 16px;
+  padding: 20px max(16px, env(safe-area-inset-right)) calc(48px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+
+/* Header */
+header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+header h1 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+header .muted { margin: 0; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.pill.scanning { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.pill.processing { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
+.pill.finishing { color: var(--blue); background: var(--blue-soft); border-color: transparent; }
+.pill.done { color: var(--accent); }
+
+/* Cards and layout */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); }
+.card h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
+.card h3 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 16px 0 6px; }
+.layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); align-items: start; }
+.column { display: grid; gap: 16px; min-width: 0; }
+.layout.single { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
+@media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
+
+/* Controls: every input, select and button is exactly 40 px tall so rows line up. */
+.row { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; }
+.fields { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) minmax(0, 1fr); gap: 12px; }
+.field { display: grid; gap: 5px; font-size: 12px; color: var(--muted); font-weight: 600; min-width: 0; align-content: end; }
+.field.grow { flex: 1 1 220px; }
+.field select, .field input { width: 100%; min-width: 0; }
+input, select, button {
+  font: inherit; font-size: 14px; line-height: 20px; height: 40px; padding: 0 12px; margin: 0;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text);
+}
+select {
+  appearance: none; -webkit-appearance: none; padding-right: 34px; cursor: pointer;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2.5 4.5l3.5 3.5 3.5-3.5' fill='none' stroke='%2366736c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat; background-position: right 12px center;
+}
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input:disabled, select:disabled { background-color: var(--bg); color: var(--muted); cursor: default; }
+button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; font-weight: 600; padding: 0 16px; white-space: nowrap; }
+button:hover:not(:disabled) { filter: brightness(1.08); }
+button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.secondary { background: var(--surface); color: var(--accent); border-color: var(--border); }
+button.stop { background: var(--danger); border-color: var(--danger); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; justify-content: space-between; margin-top: 12px; }
+.toolbar .field { flex: 1 1 260px; max-width: 420px; }
+
+/* Camera */
+.camera { position: relative; margin-top: 12px; border-radius: var(--radius); overflow: hidden; background: #0e1512; aspect-ratio: 16 / 9; }
+.camera video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.camera .placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #9fb0a7; font-size: 14px; text-align: center; padding: 16px; }
+.camera .shelf-tag { position: absolute; top: 10px; left: 10px; padding: 4px 10px; border-radius: 999px; background: rgba(14, 21, 18, 0.7); color: #fff; font-size: 12px; font-weight: 600; }
 .hidden { display: none; }
-.message { background: #eef6f1; border-left: 4px solid #15563f; padding: 8px 10px; margin: 8px 0 0; }
-.muted { color: #6b7772; font-size: 13px; }
-.counters { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 6px; }
-.counters b { font-size: 20px; margin-right: 4px; }
-.lines, .queue, .transcript { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; }
-.lines li { display: grid; grid-template-columns: 2fr 2fr 1fr 1.4fr; gap: 8px; padding: 5px 6px; border-top: 1px solid #eef1ee; cursor: pointer; font-size: 13px; }
-.lines li.selected { background: #fff4d6; }
-.status { text-transform: capitalize; } .status.identified, .status.priced { color: #15563f; } .status.needs_appraisal { color: #a5570d; }
-.transcript li { padding: 4px 0; } .transcript li.agent { color: #15563f; }
-.queue li { padding: 4px 0; font-size: 13px; border-top: 1px solid #eef1ee; }
-.frame { width: 100%; max-width: 720px; display: block; cursor: crosshair; border: 1px solid #c9d1cb; border-radius: 6px; }
-form { display: flex; gap: 8px; margin-top: 8px; } form input { flex: 1; }
-a { color: #15563f; }
+
 /* Live status under the camera: scanning (green), processing a frame (amber), finishing (blue). */
-.strip { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-top: 8px; border-radius: 6px; font-size: 14px; font-weight: 500; }
-.strip.scanning { background: #eef6f1; color: #15563f; }
-.strip.processing { background: #fff4d6; color: #7a4b00; }
-.strip.finishing { background: #e8eefc; color: #1f3a8a; }
-.spinner { flex: none; width: 14px; height: 14px; border: 2px solid rgba(0, 0, 0, 0.15); border-top-color: currentColor; border-radius: 50%; animation: spin 0.8s linear infinite; }
+.strip { display: flex; align-items: center; gap: 10px; padding: 9px 12px; margin-top: 10px; border-radius: 8px; font-size: 14px; font-weight: 500; }
+.strip.scanning { background: var(--accent-soft); color: var(--accent); }
+.strip.processing { background: var(--amber-soft); color: var(--amber); }
+.strip.finishing { background: var(--blue-soft); color: var(--blue); }
+.spinner { flex: none; width: 14px; height: 14px; border: 2px solid rgba(0, 0, 0, 0.12); border-top-color: currentColor; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* What the agent says right now */
+.message { display: flex; gap: 10px; background: var(--accent-soft); border-left: 4px solid var(--accent); border-radius: 0 8px 8px 0; padding: 10px 12px; margin: 10px 0 0; }
+.message::before { content: "🗣"; flex: none; }
+.muted { color: var(--muted); font-size: 13px; }
+
+/* Inventory */
+.counters { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.counters div { background: var(--bg); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--muted); line-height: 1.3; }
+.counters b { display: block; font-size: 20px; color: var(--text); }
+.counters div.warn b { color: var(--amber); }
+.lines { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.lines li { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.4fr) auto; gap: 6px 10px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+.lines li:first-child { border-top: 0; }
+.lines li:hover { background: var(--bg); }
+.lines li.selected { background: var(--amber-soft); box-shadow: inset 3px 0 0 var(--amber); }
+.lines .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lines .meta { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lines .price { grid-column: 1 / -1; color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+.lines .price:empty { display: none; }
+.empty { padding: 14px 10px; color: var(--muted); font-size: 13px; text-align: center; }
+.status { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: capitalize; white-space: nowrap; background: var(--bg); color: var(--muted); }
+.status.identified, .status.priced { background: var(--accent-soft); color: var(--accent); }
+.status.needs_appraisal { background: var(--amber-soft); color: var(--amber); }
+
+/* Conversation */
+.transcript { list-style: none; margin: 0 0 10px; padding: 0; max-height: 280px; overflow: auto; display: grid; gap: 6px; }
+.transcript li { max-width: 88%; padding: 7px 11px; border-radius: 12px; font-size: 14px; line-height: 1.4; }
+.transcript li.agent { background: var(--accent-soft); color: var(--text); border-bottom-left-radius: 4px; justify-self: start; }
+.transcript li.claimant { background: var(--bg); border-bottom-right-radius: 4px; justify-self: end; }
+.transcript li b { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.mic { font-size: 12px; font-weight: 600; color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
+.mic::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+form { display: flex; gap: 8px; margin-top: 8px; } form input { flex: 1; }
+.hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+
+/* Claim packet */
+.links { display: flex; flex-wrap: wrap; gap: 8px; }
+.links a { display: inline-flex; align-items: center; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--accent); font-weight: 600; font-size: 13px; text-decoration: none; background: var(--surface); }
+.links a:hover { background: var(--accent-soft); }
+a { color: var(--accent); }
+.queue { list-style: none; margin: 0; padding: 0; max-height: 200px; overflow: auto; }
+.queue li { padding: 6px 0; font-size: 13px; border-top: 1px solid var(--border); }
+
+/* ---------- Responsive: phone, tablet, desktop, wide, landscape, touch, motion ---------- */
+
+/* Wide desktop (>= 1400 px): more room for the inventory. */
+@media (min-width: 1400px) {
+  main { max-width: 1320px; }
+  .layout { grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); gap: 20px; }
+  .lines { max-height: 420px; }
+  .transcript { max-height: 340px; }
+}
+
+/* Tablet (601-960 px): one column, controls two per row, camera a little shorter. */
+@media (max-width: 960px) {
+  .layout { grid-template-columns: 1fr; }
+  .fields { grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr); }
+  .fields .field:last-child { grid-column: 1 / -1; }
+  .camera { aspect-ratio: 4 / 3; max-height: 55vh; }
+}
+
+/* Phone (<= 600 px): everything stacks, big touch targets, no horizontal scroll. */
+@media (max-width: 600px) {
+  :root { font-size: 15px; }
+  main { gap: 12px; padding-top: 12px; }
+  header h1 { font-size: 19px; }
+  header .muted { font-size: 12px; }
+  .card { padding: 12px; border-radius: 8px; }
+  .row { gap: 8px; }
+  .fields { grid-template-columns: 1fr; gap: 10px; }
+  .field, .field.grow, .toolbar .field { flex: 1 1 100%; max-width: none; }
+  .actions { width: 100%; }
+  .actions button { flex: 1 1 0; }
+  input, select, button { height: 44px; font-size: 16px; } /* 16px stops iOS zooming into fields */
+  .camera { aspect-ratio: 3 / 4; max-height: 60vh; }
+  .strip { font-size: 13px; }
+  .counters { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .counters b { font-size: 18px; }
+  /* Inventory rows become two lines: name + status, then the detail. */
+  .lines li { grid-template-columns: minmax(0, 1fr) auto; }
+  .lines .meta { grid-column: 1 / -1; white-space: normal; }
+  .lines .name { white-space: normal; }
+  .transcript li { max-width: 100%; }
+  form { flex-direction: row; }
+  .hint { display: none; }
+  .links a { flex: 1 1 calc(50% - 8px); justify-content: center; }
+}
+
+/* Very small phones (<= 380 px). */
+@media (max-width: 380px) {
+  .counters { grid-template-columns: repeat(2, 1fr); }
+  .links a { flex-basis: 100%; }
+}
+
+/* Landscape phone: keep the camera and controls visible without a tall preview. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .camera { aspect-ratio: 16 / 9; max-height: 45vh; }
+  .lines, .transcript { max-height: 180px; }
+}
+
+/* Touch devices: larger hit areas for the list rows. */
+@media (pointer: coarse) {
+  .lines li { padding: 11px 10px; }
+  button, input, select { height: 44px; }
+}
+
+/* Reduced motion: no spinner or pulse animation. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .mic::before { animation: none; }
+  .spinner { border-top-color: transparent; border-color: currentColor; }
+}
+
+/* Print the page as a quick record: hide controls and the camera. */
+@media print {
+  .camera, .row, .strip, form, .hint, .pill { display: none !important; }
+  .layout { grid-template-columns: 1fr; }
+  .card { box-shadow: none; }
+  .lines, .transcript { max-height: none; overflow: visible; }
+}
+
+/* Sweep page: the chat fills the right column to the height of the camera card. */
+.layout { align-items: stretch; }
+.chat { display: flex; flex-direction: column; min-height: 420px; }
+.chat .transcript { flex: 1 1 auto; max-height: none; min-height: 200px; overflow: auto; align-content: start; }
+.chat .transcript .end { padding: 0; height: 0; }
+.chat form { margin-top: auto; }
+.selection { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+button.link { background: none; border: 0; color: var(--accent); padding: 0; height: auto; font-weight: 600; font-size: inherit; cursor: pointer; }
+button.link:hover { text-decoration: underline; }
+.live-counts { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 0; font-size: 13px; color: var(--muted); align-items: center; }
+.live-counts b { color: var(--text); font-size: 15px; margin-right: 3px; }
+
+/* Inventory page */
+.page-inventory header .row { align-items: center; }
+.page-inventory .lines { max-height: none; }
+.page-inventory .lines li { grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto; }
+@media (max-width: 960px) { .chat { min-height: 320px; } .chat .transcript { max-height: 45vh; } }
+@media (max-width: 600px) { .page-inventory .lines li { grid-template-columns: minmax(0, 1fr) auto; } }
+
