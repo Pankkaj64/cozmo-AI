@@ -62,6 +62,9 @@ BOOK_READER_MODEL = settings.book_reader_model
 OCR_FRAME_BUDGET_S = 10  # floor: a sparse frame always gets this much OCR time
 OCR_SECONDS_PER_SPINE = 1.5  # the budget grows with the number of detected spines ...
 OCR_FRAME_BUDGET_MAX_S = 60  # ... up to this cap, so a dense wall cannot stall the sweep
+# Tiled detection finds thin spines at a larger scale but, measured on a worn shelf, it added
+# mostly edge-cut boxes and no second-detector witnesses, so it is off unless asked for.
+DETECTOR_TILES = os.getenv("DETECTOR_TILES", "false").strip().lower() in {"1", "true", "yes"}
 
 
 def ocr_budget_s(spines: int) -> float:
@@ -217,6 +220,52 @@ async def validate_boxes(
 # OCR and title reading
 
 
+def prepare_spine(crop: Image.Image) -> Image.Image:
+    """Upscale small spine crops two times and stretch contrast so worn gilt lettering survives OCR."""
+    if min(crop.size) < 160 or max(crop.size) < 700:
+        crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+    crop.thumbnail((1024, 1024))  # OCR time grows with pixels; this is the ceiling
+    return ImageOps.autocontrast(crop, cutoff=1)
+
+
+def detect_tiles(raw: bytes, model_name: str, rows: int = 2, cols: int = 2) -> list[dict]:
+    """Run a detector on overlapping tiles so thin spines are seen at a larger scale.
+
+    Boxes are mapped back to full-frame coordinates. A box touching a tile border that is
+    not an image border is a cut spine and is dropped, so tiles never add half boxes.
+    """
+    image = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    W, H = image.size
+    tw, th, margin = W / cols, H / rows, 0.2
+    found = []
+    for r in range(rows):
+        for c in range(cols):
+            x0, y0 = max(0, int(c * tw - margin * tw)), max(0, int(r * th - margin * th))
+            x1, y1 = (
+                min(W, int((c + 1) * tw + margin * tw)),
+                min(H, int((r + 1) * th + margin * th)),
+            )
+            tile = image.crop((x0, y0, x1, y1))
+            for obj in detect_objects(_jpeg(tile, 92), model_name):
+                bx = obj["bbox"]
+                if (bx[0] < 0.01 and x0 > 0) or (bx[2] > 0.99 and x1 < W):
+                    continue
+                if (bx[1] < 0.01 and y0 > 0) or (bx[3] > 0.99 and y1 < H):
+                    continue
+                found.append(
+                    dict(
+                        obj,
+                        bbox=[
+                            (x0 + bx[0] * (x1 - x0)) / W,
+                            (y0 + bx[1] * (y1 - y0)) / H,
+                            (x0 + bx[2] * (x1 - x0)) / W,
+                            (y0 + bx[3] * (y1 - y0)) / H,
+                        ],
+                    )
+                )
+    return found
+
+
 def _crop(image: Image.Image, box: list[float], pad: int = 0) -> Image.Image:
     x1, y1, x2, y2 = box
     return image.crop(
@@ -253,11 +302,11 @@ def read_book_crops(raw: bytes, books: list[dict]) -> list[dict]:
         crop = _crop(
             image, book["bbox"], pad=4
         )  # yolo detect the book and bound the box, crop ectract only that area
-        crop.thumbnail((640, 640))  # ocr cuts to 640 pixels - time increases with increasein pixels
+        crop = prepare_spine(crop)  # upscale thin spines and stretch contrast for worn lettering
 
         rotations = []
 
-        for angle in (0, 90, 270):
+        for angle in (0, 90, 270, 180):  # 180 last: only reached when nothing confident was read
             if time.monotonic() - started > budget:
                 break  # keep what this book has; the next book gets the budget note
             try:
@@ -446,6 +495,19 @@ async def detect_frame_objects(
         ]
     except Exception as exc:  # noqa: BLE001
         candidate["notes"].append(f"Supplementary detector unavailable ({type(exc).__name__}).")
+    if DETECTOR_TILES and len(books) >= 6:  # a shelf: look again at tile scale (opt-in)
+        try:
+            before = len(books)
+            for model in (DETECTOR_MODEL, VALIDATOR_DETECTOR_MODEL, ROOM_DETECTOR_MODEL):
+                boxes = await asyncio.to_thread(detect_tiles, raw, model)
+                tile_books, _ = select_objects([o for o in boxes if o["category"] == "book"])
+                merge_book_boxes(books, tile_books, model)
+            print(
+                f"[DEBUG {stamp()}] detector.tiles books_before={before} books_after={len(books)}",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            candidate["notes"].append(f"Tiled detection unavailable ({type(exc).__name__}).")
     try:  # open-vocabulary room categories (shelving, lamp, framed painting, rug ...)
         room_objects = await asyncio.to_thread(detect_objects, raw, ROOM_DETECTOR_MODEL)
         candidate["room_detector"] = ROOM_DETECTOR_MODEL

@@ -476,6 +476,21 @@ def demote_author_title(line: dict, identification: dict) -> None:
     )
 
 
+def demote_misread(line: dict, identification: dict) -> None:
+    """A cleanly read wrong letter passed the OCR rule; the catalogue says what it probably is."""
+    title = line.get("title", "")
+    line.update(
+        proposed_title=title,
+        title="",
+        status="unidentified",
+        title_rejected=(
+            f"'{title}' is probably an OCR misread: Open Library has "
+            f"'{identification.get('suggested_title')}' ('{identification.get('misread_word')}' read as "
+            f"'{identification.get('suggested_word')}'). Kept for review, not priced."
+        ),
+    )
+
+
 async def _catalogue(line: dict, client: httpx.AsyncClient) -> dict:
     if line.get("isbn"):
         metadata = await resolve_isbn(line["isbn"], client)
@@ -526,6 +541,15 @@ async def research_inventory(
                         "status": "unavailable",
                         "error": type(exc).__name__,
                     }
+                if result["identification"].get("status") == "catalogue_misread":
+                    demote_misread(line, result["identification"])
+                    results.append(result)
+                    print(
+                        f"[DEBUG {stamp()}] research.line.misread ref_id={line['id']} "
+                        f"suggested={result['identification']['suggested_title']!r}",
+                        flush=True,
+                    )
+                    continue
                 if result["identification"].get("status") == "author_as_title":
                     demote_author_title(line, result["identification"])
                     results.append(result)

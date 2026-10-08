@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 
 import httpx
 
@@ -55,31 +56,87 @@ def visible_isbn(text):
     return ""
 
 
+def ocr_coverage(title, lines):
+    """Fraction of the title's letters matched, in order, by the pooled OCR fragments."""
+    target = normalized(title)
+    pool = normalized(" ".join(line["text"] for line in lines))
+    if not target or not pool:
+        return 0.0
+    blocks = [
+        b
+        for b in SequenceMatcher(None, target, pool, autojunk=False).get_matching_blocks()
+        if b.size >= 3
+    ]
+    if not blocks or max(b.size for b in blocks) < 4:
+        return 0.0  # no four-letter run of the title is on the spine: nothing to anchor on
+    return min(1.0, sum(b.size for b in blocks) / len(target))
+
+
+def misread_word(title, seen_text):
+    """A title word absent from the blind check's text but near one of its words (ratio >= 0.8)."""
+    seen = seen_text.split()
+    if not seen:
+        return None
+    for word in normalized(title).split():
+        if len(word) < 4 or word in seen:
+            continue
+        near = max(seen, key=lambda w: SequenceMatcher(None, word, w).ratio())
+        if SequenceMatcher(None, word, near).ratio() >= 0.8:
+            return word, near
+    return None
+
+
 def reading_agreement(book):
     """Conservative agreement gate for automatic live identification.
 
-    Requires exact visible text, strong crop OCR and a separately read image title.
-    This is an evidence gate, not a claim of independently measured accuracy.
+    Two ways in, both evidence-bound. `ocr_exact`: the proposed title is literally in the OCR
+    text at >= 0.9 confidence. `two_models`: the title reader and the blind check, two models
+    with no shared hint, transcribed the same title and the OCR fragments anchor at least a
+    third of its letters in order (one run of four or more). Neither way can accept letters
+    that are not on the spine.
     """
     reading = book.get("reader_evidence", {})
+    check = book.get("crop_verification") or {}
     title = str(book.get("title") or "").strip()
     lines = book.get("ocr_lines", [])
     text = " ".join(line["text"] for line in lines)
     supported = [line for line in lines if line["text"].casefold() in title.casefold()]
     confidence = min((line.get("confidence", 0) for line in supported), default=0)
     author = str(reading.get("author") or book.get("author") or "").strip()
-    accepted = bool(
+    base = bool(
         not book.get("partial")
         and not book.get("fallback")
         and reading.get("is_book")
         and reading.get("title") == title
         and len(title) >= 8
-        and title.casefold() in text.casefold()
-        and confidence >= 0.9
         # The writer's credit line is never the title, even when it is the largest text.
         and not (author and title.casefold() == author.casefold())
     )
-    return accepted, confidence
+    seen_text = normalized(check.get("visible_text") or "")
+    misread = misread_word(title, seen_text)
+    if misread:
+        # OCR read a wrong letter cleanly ("MASTERPIEG"); the blind check read the word
+        # differently ("masterpiece"). Two readings that disagree cannot identify a book.
+        book["title_rejected"] = (
+            f"OCR read '{misread[0]}' but the blind check read '{misread[1]}'; probable misread."
+        )
+        base = False
+    exact = base and title.casefold() in text.casefold() and confidence >= 0.9
+    coverage = ocr_coverage(title, lines)
+    two_models = bool(
+        base
+        and check.get("agreed")
+        and seen_text
+        and normalized(title) in seen_text
+        and coverage >= 0.3  # OCR must anchor at least a third of the letters, in order
+    )
+    book["identity_basis"] = "ocr_exact" if exact else "two_models" if two_models else ""
+    book["ocr_coverage"] = round(coverage, 3)
+    if exact:
+        return True, confidence
+    if two_models:
+        return True, round(0.75 + 0.25 * coverage, 3)
+    return False, confidence
 
 
 def promote_verified_book(line, count_validation):
@@ -89,6 +146,9 @@ def promote_verified_book(line, count_validation):
     candidate = dict(line, title=line.get("proposed_title") or line.get("title") or "")
     agreed, confidence = reading_agreement(candidate)
     candidate.update(identity_verified=agreed, confidence=confidence)
+    for key in ("identity_basis", "ocr_coverage", "title_rejected"):
+        if key in candidate:
+            line[key] = candidate[key]
     source_text = " ".join(x["text"] for x in candidate.get("ocr_lines", []))
     identity = identify_observation(candidate, source_text, count_validation)
     if identity["status"] == "identified":
@@ -129,6 +189,40 @@ async def known_author(name: str, client: httpx.AsyncClient) -> dict | None:
     return None
 
 
+async def catalogue_witness(book: dict, client: httpx.AsyncClient) -> dict:
+    """Ask Open Library whether the accepted title is a known work or an OCR misread.
+
+    confirmed: every word of the title appears in a catalogue title (order-free).
+    misread: a title word is absent but a catalogue word is within edit similarity 0.8 of it
+    ("masterpieg" vs "masterpiece"), which is the signature of a cleanly read wrong letter.
+    """
+    author = book.get("author") or book.get("proposed_author") or ""
+    response = await client.get(
+        OPEN_LIBRARY_SEARCH_URL,
+        params={
+            "q": f"{book['title']} {author}".strip(),
+            "limit": 5,
+            "fields": "key,title,author_name",
+        },
+        headers={"User-Agent": HTTP_USER_AGENT},
+    )
+    response.raise_for_status()
+    docs = response.json().get("docs", [])
+    words = normalized(book["title"]).split()
+    for doc in docs:
+        if all(w in normalized(doc.get("title", "")).split() for w in words):
+            return {"status": "confirmed", "doc": doc}
+    for doc in docs:
+        catalogue = normalized(doc.get("title", "")).split()
+        for word in words:
+            if word in catalogue or len(word) < 4:
+                continue
+            near = max(catalogue, key=lambda c: SequenceMatcher(None, word, c).ratio(), default="")
+            if near and SequenceMatcher(None, word, near).ratio() >= 0.8:
+                return {"status": "misread", "word": word, "suggested_word": near, "doc": doc}
+    return {"status": "not_found"}
+
+
 async def resolve_work(book: dict, client: httpx.AsyncClient) -> dict:
     # A "title" that is a well-known author's name is the writer's credit line, not a work.
     author = await known_author(book["title"], client)
@@ -139,6 +233,20 @@ async def resolve_work(book: dict, client: httpx.AsyncClient) -> dict:
             "work_count": author.get("work_count"),
             "source": "Open Library authors",
             "url": OPEN_LIBRARY_BASE_URL + "authors/" + str(author.get("key", "")),
+            "retrieved_at": datetime.now(UTC).isoformat(),
+            "edition_resolved": False,
+        }
+    witness = await catalogue_witness(book, client)
+    if witness["status"] == "misread":
+        doc = witness["doc"]
+        return {
+            "status": "catalogue_misread",
+            "suggested_title": doc.get("title", ""),
+            "authors": doc.get("author_name", []),
+            "misread_word": witness["word"],
+            "suggested_word": witness["suggested_word"],
+            "source": "Open Library",
+            "url": OPEN_LIBRARY_BASE_URL + doc.get("key", "").lstrip("/"),
             "retrieved_at": datetime.now(UTC).isoformat(),
             "edition_resolved": False,
         }

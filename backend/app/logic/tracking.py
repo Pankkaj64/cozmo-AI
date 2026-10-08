@@ -110,10 +110,13 @@ def match_track(found, available, kind, transforms=None):
             a, b = found.get("bbox"), old.get("object_bbox")
             if a and b and overlap(a, b) >= 0.65:
                 score = 0.85
-        if kind == "item" and transforms is not None:
-            views = [{"bbox": old.get("object_bbox"), "frame_ref": old.get("frame_ref")}] + old.get(
-                "observations", []
-            )[-5:]
+        if transforms is not None:
+            views = [
+                {
+                    "bbox": old.get("object_bbox") or old.get("bbox"),
+                    "frame_ref": old.get("frame_ref"),
+                }
+            ] + old.get("observations", [])[-5:]
             alignment = max(
                 projected_overlap(
                     view.get("bbox"),
@@ -122,13 +125,59 @@ def match_track(found, available, kind, transforms=None):
                 )
                 for view in views
             )
-            if alignment >= 0.55 and (
-                old.get("category") == found.get("category") or alignment >= 0.78
+            if (
+                kind == "item"
+                and alignment >= 0.55
+                and (old.get("category") == found.get("category") or alignment >= 0.78)
             ):
+                score = max(score, 0.9 + 0.09 * alignment)
+            # A spine is the same spine when the aligned boxes land on each other; thin boxes
+            # make IoU harsh, so the bar is a little lower than for furniture.
+            if kind == "book" and alignment >= 0.45:
                 score = max(score, 0.9 + 0.09 * alignment)
         if score >= 0.85:
             scored.append((score, old))
     return max(scored, key=lambda pair: pair[0])[1] if scored else None
+
+
+def merge_book_evidence(previous, entry):
+    """A book seen in several frames keeps the union of its evidence.
+
+    Whole in any frame beats cut off; a detector that drew the box in any frame is a witness;
+    OCR lines are pooled (best confidence per text); a reader proposal fills an empty one; a
+    blind check that agreed is never replaced by a later weaker one. Nothing here accepts a
+    title: the identity gate is run again on the pooled evidence by the caller.
+    """
+    previous["partial"] = bool(previous.get("partial")) and bool(entry.get("partial"))
+    witnesses = list(
+        dict.fromkeys(list(previous.get("seen_by", [])) + list(entry.get("seen_by", [])))
+    )
+    previous["seen_by"] = witnesses
+    previous["count_verified"] = bool(
+        previous.get("count_verified") or entry.get("count_verified") or len(witnesses) >= 2
+    )
+    pooled = {}
+    for line in list(previous.get("ocr_lines", [])) + list(entry.get("ocr_lines", [])):
+        key = line["text"].strip().casefold()
+        if key and (key not in pooled or line["confidence"] > pooled[key]["confidence"]):
+            pooled[key] = line
+    previous["ocr_lines"] = list(pooled.values())
+    new_reading = entry.get("reader_evidence") or {}
+    if new_reading.get("title") and not previous.get("proposed_title"):
+        previous["proposed_title"] = entry.get("proposed_title") or new_reading["title"]
+        previous["proposed_author"] = entry.get("proposed_author", "")
+        previous["proposed_publisher"] = entry.get("proposed_publisher", "")
+        previous["reader_evidence"] = new_reading
+    elif new_reading.get("status") == "proposal" and (previous.get("reader_evidence") or {}).get(
+        "status"
+    ) in (None, "deferred", "unavailable"):
+        previous["reader_evidence"] = new_reading
+    new_check = entry.get("crop_verification") or {}
+    old_check = previous.get("crop_verification") or {}
+    if new_check.get("agreed") or not old_check.get("agreed"):
+        if new_check:
+            previous["crop_verification"] = new_check
+    previous["frames_seen"] = len(previous.get("observations", []))
 
 
 def retain_observation(collection, previous, entry, found, ref):
@@ -144,6 +193,9 @@ def retain_observation(collection, previous, entry, found, ref):
             "reader_category",
             "appearance",
             "ocr_lines",
+            "partial",
+            "seen_by",
+            "count_verified",
         )
         if key in found
     }
@@ -154,6 +206,8 @@ def retain_observation(collection, previous, entry, found, ref):
         return entry
     previous.setdefault("observations", []).append(observation)
     previous["last_seen_frame"] = ref
+    if "title" in entry and not previous.get("identity_source"):
+        merge_book_evidence(previous, entry)
     if (
         not previous.get("identity_source")
         and found.get("reader_category")
@@ -169,7 +223,11 @@ def retain_observation(collection, previous, entry, found, ref):
         ):
             if key in entry:
                 previous[key] = entry[key]
-    if not previous.get("identity_source") and entry.get("crop_verification"):
+    if (
+        not previous.get("identity_source")
+        and entry.get("crop_verification")
+        and "title" not in entry
+    ):
         previous["crop_verification"] = entry["crop_verification"]
         if "category" in previous:
             previous["category_verified"] = bool(

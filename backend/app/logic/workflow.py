@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from .claim import calculate_totals, validate_packet
-from .identification import identify_observation
+from .identification import identify_observation, promote_verified_book
 from .measurement import Calibration, measure_spine
 from .pricing import EMPTY_ITEM_PRICE, EMPTY_REPLACEMENT, EMPTY_USED, apply_prices
 from .tracking import match_track, retain_observation, scene_transform
@@ -170,6 +170,21 @@ def next_guidance(packet):
             "text": f"I could not analyse that view ({reason[:120]}). Hold the camera still; I will try the next frame.",
             "action": "capture",
         }
+    frame_books = [b for b in latest.get("books", []) if isinstance(b, dict) and b.get("bbox")]
+    cut_off = sum(1 for b in frame_books if b.get("partial"))
+    if len(frame_books) >= 3 and cut_off * 3 >= len(frame_books):
+        return {
+            "code": "edges",
+            "text": f"{cut_off} of {len(frame_books)} spines are cut off at the edge of the picture. Step back a little so whole spines are in view, then hold still.",
+            "action": "capture",
+        }
+    heights = sorted(b["bbox"][3] - b["bbox"][1] for b in frame_books)
+    if len(heights) >= 8 and heights[len(heights) // 2] < 0.12:
+        return {
+            "code": "closer",
+            "text": "The spines are small in the picture. Move closer, one shelf at a time, and hold still so the lettering is readable.",
+            "action": "capture",
+        }
     if latest.get("count_status") == "needs_review":
         return {
             "code": "retake",
@@ -204,8 +219,9 @@ def merge_observations(sweep, candidate, shelf, ref):
     ]
     transforms = {}
     if candidate.get("scene"):
-        needed_refs = {item.get("frame_ref") for item in old_items} | {
-            o.get("frame_ref") for item in old_items for o in item.get("observations", [])[-5:]
+        tracked = old_items + old_books
+        needed_refs = {item.get("frame_ref") for item in tracked} | {
+            o.get("frame_ref") for item in tracked for o in item.get("observations", [])[-5:]
         }
         for old_frame in packet.get("frames", []):
             if old_frame["frame_ref"] in needed_refs and old_frame.get("scene"):
@@ -296,6 +312,8 @@ def merge_observations(sweep, candidate, shelf, ref):
             # Kept on the line so a deferred crop check can still pass the identity gate later.
             "count_verified": found.get("count_verified"),
             "seen_by": found.get("seen_by", []),
+            "identity_basis": found.get("identity_basis", ""),
+            "ocr_coverage": found.get("ocr_coverage"),
             "edition": identity["edition"],
             "isbn": identity["isbn"],
             "spine_height_cm": None,
@@ -304,12 +322,21 @@ def merge_observations(sweep, candidate, shelf, ref):
             "replacement_cost": dict(EMPTY_REPLACEMENT),
             "used_value": dict(EMPTY_USED),
         }
-        previous = match_track(found, old_books, "book")
+        previous = match_track(found, old_books, "book", transforms)
         if previous:
             old_books.remove(previous)
             if previous.get("exclusion"):
                 continue
         book = retain_observation(packet["books"], previous, book, found, ref)
+        if previous and book.get("status") != "identified" and not book.get("identity_source"):
+            # Evidence from every frame this book appeared in is now on the line; judge it again.
+            promote_verified_book(book, candidate.get("validation", {}))
+            if book.get("status") == "identified":
+                identified = True
+                print(
+                    f"[DEBUG {stamp()}] book.identified.multiframe book_id={book['id']} title={book['title']!r} observations={len(book['observations'])}",
+                    flush=True,
+                )
         print(
             f"[DEBUG {stamp()}] inventory.book.associated book_id={book['id']} matched={bool(previous)} observations={len(book['observations'])}",
             flush=True,
