@@ -234,6 +234,8 @@ network calls and are free tiers (call counts are recorded per sweep in `cost`).
   per book); empty views take about 3 seconds. Time to packet is recorded per sweep.
 - Only what is in a sampled frame is seen; the agent asks the claimant to pause at each
   shelf. Dense shelves of very small spines are detected but rarely identified.
+- Pressing Stop while a frame is being analysed waits for that frame (the status strip says
+  so) before the packet is built; a frame takes 20-60 s on an 8 GB laptop.
 - A spine whose largest text is the author's name is not identified: the title reader is
   told names go in `author`, the gate refuses a title equal to the author line, and at
   finish Open Library's author search demotes any remaining author-as-title to `author`

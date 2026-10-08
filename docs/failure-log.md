@@ -128,3 +128,22 @@ spine dataset, plus independent ground truth, are still needed for acceptance.
     (2,225 works), identified count 3 -> 2, the name kept as the line's author. Remaining
     limit: the live gate alone still passes this case when the reader leaves `author` empty;
     the catalogue check needs the network at finish time.
+
+15. **Stop sweep left the sweep hanging with "Wait for frame processing before finishing".**
+    Frames go out every 2 s and take 20-60 s each, so Stop almost always lands while one is in
+    flight. The frontend turned the camera off and called finish at once; the backend's 409
+    (correct: merging a frame during finish would corrupt the packet) was shown and never
+    retried, so the sweep stayed active for ever. Fix: Stop waits for the in-flight frame,
+    retries finish on that 409, and a status strip shows scanning / processing / finishing.
+    Verified in the browser with a synthetic camera feed: Stop pressed at 30 s into a 50 s
+    frame, finish returned 200 after the frame, no 409 in the network log.
+
+16. **A tissue box counted as a book and the blind check crashed on it.** The detector called
+    the box a book at 41 %, the second detector agreed on the box, OCR read the printed
+    marketing text, and Gemma proposed the manufacturer as the author. The Qwen blind check,
+    the one model that should have said "not a book", answered a category outside its list
+    and the code raised a ValueError, recorded as "unavailable". Fix: an unlisted answer such as
+    "tissue box" is kept as `raw_category` and becomes a `conflict` with the reason "Blind
+    check saw a tissue box, not a book". The gate had already kept the line unidentified; the
+    box still counts as one detected book, which is a known limit of the COCO "book" class.
+

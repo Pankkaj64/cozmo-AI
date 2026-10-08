@@ -111,6 +111,8 @@ If you talk while the agent is speaking, the agent stops; the conversation is tw
 
 ## Step by step: finishing (what happens when you press Stop)
 
+If a frame is still being analysed when you press Stop, the screen says "Finishing: waiting for the last frame" and waits for it. Nothing is lost and nothing needs to be pressed again.
+
 ```mermaid
 flowchart TD
     S[Stop sweep] --> C[Finish the second opinions<br/>that were postponed]

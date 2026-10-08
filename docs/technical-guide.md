@@ -188,6 +188,13 @@ Details per stage:
 - **SSE (`routes.workflow_events`)**: an async generator yields `data: <json>` whenever the
   serialised packet changes, with `retry: 1500` and a lifetime limit; `EventSource` in
   `App.tsx` applies it with `setPacket` and speaks new guidance when `!isSpeaking()`.
+- **Status strip and Stop (`App.tsx`)**: `inFlight` is true while a frame upload is awaiting
+  the backend, `finishing` from the Stop click until the packet arrives. `status()` turns these
+  into one line under the camera: green "Scanning · N frames analysed", amber "Processing
+  frame N · 12s · <backend live_progress guidance>", blue "Finishing…", and the after-capture
+  counter from `verification_progress`. `stop()` turns the camera off, then waits on `busyRef`
+  for the in-flight frame, then calls `stop-capture` and `finish`; a 409 "Wait for frame
+  processing" answer is retried every 2 s for up to five minutes instead of being shown.
 
 ## Step 5: the voice loop
 
