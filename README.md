@@ -38,26 +38,39 @@ Documents (PDF, charts included) in [`docs/pdf/`](docs/pdf/):
 - Live status: a strip under the camera (scanning, processing frame N with elapsed time and
   the backend's guidance, finishing, after-capture checks) mirrored by a header pill, and a
   live line of counts.
+- Capture guidance from the evidence: when a third of the spines touch the frame edge the
+  agent says "step back"; when the spines are small it says "move closer, one shelf at a
+  time"; blur, glare and unverified counts have their own prompts.
 - Stop waits for the frame still being analysed and retries the finish step, so a sweep can
   never be left half-finished.
 
 **Perception**
 
 - Three detectors: YOLO26s and YOLO11s for books, YOLOE-26s with a home-library vocabulary
-  for spines and room objects; every detector that drew a box is recorded as a witness.
+  for spines and room objects; every detector that drew a box is recorded as a witness. On
+  a shelf (six or more boxes) all three look again at four overlapping tiles, so thin spines
+  are seen at a larger scale; half boxes at tile borders are dropped.
+- Evidence pooled across frames: a book seen in several frames keeps the union of its OCR
+  lines, detector witnesses, the best blind check and the first title proposal; whole in any
+  frame beats cut off; the identity gate is run again on the pooled evidence.
 - Per-box second-detector check (`count_verified`), not a frame-wide count.
-- Crop OCR (PaddleOCR) at 0°, 90° and 270° with early stop; the OCR time budget scales with
-  the number of spines (10 s floor, 1.5 s per spine, 60 s cap).
+- Crop OCR (PaddleOCR): small spines are upscaled two times and contrast-stretched, read at
+  0°, 90°, 270° and finally 180°, with early stop; the OCR time budget scales with the
+  number of spines (10 s floor, 1.5 s per spine, 60 s cap).
 - Title reader (Gemma 3 4B) limited to 60 s per live frame, best-evidenced crops first; the
   rest are read after capture. Author and publisher may only be copied from OCR lines.
 - Blind crop check (Qwen3-VL 2B) with no detector hint, 90 s per frame, the rest deferred;
   an answer outside its category list ("tissue box") is a recorded conflict, not an error;
   mirror vs framed print is corrected from the blind check and the claimant is asked
   "original or print?".
-- Identity gate in plain rules: exact OCR text at ≥0.9, reader title equal to the
-  OCR-supported title (≥8 characters), blind check agreed, second detector on the same box,
-  not cut off at the frame edge. An author's name is never accepted as a title (reader
-  prompt, gate rule, Open Library author check at finish).
+- Identity gate in plain rules, two ways in: `ocr_exact` (the proposed title is literally
+  in the OCR text at ≥0.9) or `two_models` (the title reader and the blind check, which
+  also transcribes the visible text, read the same title and the OCR fragments anchor at
+  least a third of its letters in order). Both need ≥8 characters, blind check agreed, a
+  second detector on the same box and a whole spine. An author's name is never accepted as
+  a title (reader prompt, gate rule, Open Library author check at finish). A title word the
+  blind check read differently ("MASTERPIEG" vs "masterpiece") is refused as a probable
+  misread, and the Open Library catalogue is asked at finish to confirm or flag it.
 - Startup warm-up loads OCR and the three Ollama models before the first frame.
 
 **Inventory, measurement and pricing**
@@ -131,7 +144,8 @@ All settings are read from `backend/.env` first and fall back to the defaults in
 `backend/app/config.py`. `backend/model_choices.env` holds the model profile and is read
 after `.env`. Every variable is documented in `backend/.env.example`: model names, Ollama
 URL, OCR engine (`paddle` or `easyocr`), price-source credentials, endpoint overrides,
-pricing rules and CORS.
+pricing rules, CORS, the per-frame budgets (`BOOK_READER_FRAME_BUDGET_S`,
+`CROP_VERIFICATION_FRAME_BUDGET_S`) and the tiled-detection switch (`DETECTOR_TILES`).
 
 ## How a sweep works
 
