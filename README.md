@@ -7,17 +7,93 @@ identification, measurement and sourced pricing. Each sweep ends with `claim_pac
 a readable `report.html` and an evidence bundle.
 
 Everything runs locally: FastAPI + Python stages, local YOLO detectors, PaddleOCR for spine
-text, small Ollama vision/chat models (Gemma 3 4B, Qwen3-VL 2B, Qwen2.5 3B) and a very plain
-React page for the camera and voice. Prices come only from retrievable sources (eBay Browse,
+text, small Ollama vision/chat models (Gemma 3 4B, Qwen3-VL 2B, Qwen2.5 3B) and a two-page React
+app: the sweep page (camera, live status, chat with the agent) and the inventory page
+(inventory lines and the claim packet). Prices come only from retrievable sources (eBay Browse,
 Google Books, ECB/ER-API exchange rates) and totals are computed in code.
 
-Documents: [`docs/how-it-works.md`](docs/how-it-works.md) (plain-language, step by step),
-[`docs/technical-guide.md`](docs/technical-guide.md) (files, functions, objects and libraries
-at every step), [`docs/architecture.md`](docs/architecture.md) (the one-page architecture
-note: pipeline diagram, which model does what, metric scale, price sources) and
-[`docs/failure-log.md`](docs/failure-log.md) (what broke, root causes, measured fixes, cost
-and latency), and [`docs/next-week-plan.md`](docs/next-week-plan.md) (the improvements planned
-for the next week).
+Documents (PDF, charts included) in [`docs/pdf/`](docs/pdf/):
+
+| Document | What it covers |
+| --- | --- |
+| [how-it-works.pdf](docs/pdf/how-it-works.pdf) | plain-language, step by step, for an adjuster or product owner |
+| [technical-guide.pdf](docs/pdf/technical-guide.pdf) | files, functions, objects and libraries at every step |
+| [architecture.pdf](docs/pdf/architecture.pdf) | the one-page architecture note: pipeline chart, which model does what, time budgets, metric scale, price sources |
+| [failure-log.pdf](docs/pdf/failure-log.pdf) | what broke, root causes, measured fixes, cost and latency |
+| [next-week-plan.pdf](docs/pdf/next-week-plan.pdf) | the improvements planned for the next week, with what is already done |
+| [pricing-api-keys.pdf](docs/pdf/pricing-api-keys.pdf) | why price keys are used, free limits, how to create them step by step |
+
+## Features
+
+**Capture and guidance**
+
+- One continuous sweep from the browser camera: a JPEG every 2 s, one upload in flight,
+  every frame kept on disk as evidence and referenced by the lines it produced.
+- Voice agent with barge-in (it stops talking when you speak) and a typed input that runs
+  the same commands and questions.
+- Explicit spoken commands: next shelf, skip this shelf, first edition / signed copy,
+  print / original, shelf width, room dimensions, compare prices in another country, all
+  shelves captured. Open questions go to a local chat model that can read but not change
+  the claim.
+- Live status: a strip under the camera (scanning, processing frame N with elapsed time and
+  the backend's guidance, finishing, after-capture checks) mirrored by a header pill, and a
+  live line of counts.
+- Stop waits for the frame still being analysed and retries the finish step, so a sweep can
+  never be left half-finished.
+
+**Perception**
+
+- Three detectors: YOLO26s and YOLO11s for books, YOLOE-26s with a home-library vocabulary
+  for spines and room objects; every detector that drew a box is recorded as a witness.
+- Per-box second-detector check (`count_verified`), not a frame-wide count.
+- Crop OCR (PaddleOCR) at 0°, 90° and 270° with early stop; the OCR time budget scales with
+  the number of spines (10 s floor, 1.5 s per spine, 60 s cap).
+- Title reader (Gemma 3 4B) limited to 60 s per live frame, best-evidenced crops first; the
+  rest are read after capture. Author and publisher may only be copied from OCR lines.
+- Blind crop check (Qwen3-VL 2B) with no detector hint, 90 s per frame, the rest deferred;
+  an answer outside its category list ("tissue box") is a recorded conflict, not an error;
+  mirror vs framed print is corrected from the blind check and the claimant is asked
+  "original or print?".
+- Identity gate in plain rules: exact OCR text at ≥0.9, reader title equal to the
+  OCR-supported title (≥8 characters), blind check agreed, second detector on the same box,
+  not cut off at the frame edge. An author's name is never accepted as a title (reader
+  prompt, gate rule, Open Library author check at finish).
+- Startup warm-up loads OCR and the three Ollama models before the first frame.
+
+**Inventory, measurement and pricing**
+
+- One-to-one tracking of books across frames by appearance signature and scene alignment;
+  the packet streams to the page over Server-Sent Events.
+- Spine height and thickness in cm from a stated shelf width; floor and wall areas from
+  stated room dimensions; method, source and confidence stored on every measurement.
+- Prices only from retrievable sources: eBay Browse (new → replacement, used → used value),
+  Google Books list prices, Open Library catalogue, dated ECB / ER-API exchange rates.
+  Deterministic rules choose and reject candidates and keep every reason in
+  `price_details`; a second-country comparison table on request.
+- Appraisal routing for signed, rare and first editions, original art and anything at or
+  above the threshold.
+
+**Output and review**
+
+- Rule-based validation into a review queue; totals summed in code with blanks counted as
+  excluded, never as zero.
+- `claim_packet.json` in the agreed contract, `report.html`, an evidence bundle zip with a
+  SHA-256 manifest, per-sweep performance (stage timings, time to packet) and cost
+  (provider call counts).
+- Sweep checkpoints on disk: a dev-server reload or a browser reload restores the sweep;
+  saved sweeps can be reopened for review and a new sweep started from there.
+- Inventory page: claim packet links and the agent's summary first, then every line with
+  status, confidence and price; lines are selectable so "that is a first edition" applies
+  to the right one.
+
+**Frontend and operations**
+
+- Responsive layout: wide desktop, desktop, tablet, phone, small phone and landscape
+  breakpoints; 44 px touch targets; notch safe areas; reduced-motion; a print stylesheet.
+- Debugger-style `[DEBUG hh:mm:ss.mmm] step key=value` lines on stdout instead of a logging
+  framework; `[WARN]` and `[ERROR]` for the two other levels.
+- Everything runs on one laptop; the only network calls are the free price, catalogue and
+  exchange-rate lookups.
 
 ## Install and run
 
@@ -63,17 +139,21 @@ pricing rules and CORS.
    setting from `/api/sweeps/locales`) and explains the sweep in two sentences.
 2. **One continuous pass.** The browser samples a JPEG every 2 s (one upload at a time) and
    posts it to `/api/sweeps/{id}/frames`. Each frame is saved as evidence, then:
-   detection → crop OCR → title proposal → blind crop check → second-detector count check.
+   detection → crop OCR (budget scales with spines) → title proposal (60 s per frame, rest
+   deferred) → blind crop check (90 s per frame, rest deferred) → per-box second-detector
+   check. The status strip shows which step is running and for how long.
 3. **The agent talks back.** Guidance (blur, glare, low light, unreadable spines, "move to
    the next shelf", "is that portrait an original or a print?") is spoken as it changes.
    Explicit commands ("next shelf", "skip this shelf, those are not mine", "that is a first
    edition", "the shelf is 90 centimetres wide", "the room is 4.2 by 3.1 metres", "compare
    prices in the United Kingdom") run deterministic tools; open questions go to the local
    chat model, which sees the live inventory but cannot change facts.
-4. **Live inventory.** The packet streams over Server-Sent Events: books detected,
-   identified, unreadable; items; review count.
-5. **Stop sweep → build packet.** Deferred crop checks, catalogue lookup, price research for
-   every identified line, exchange-rate evidence, deterministic valuation and validation.
+4. **Live inventory.** The packet streams over Server-Sent Events: the chat transcript and
+   a line of counts on the sweep page (books detected, identified, items, to review); the
+   full inventory on its own page once the packet is finished.
+5. **Stop sweep → build packet.** Stop waits for the frame in flight, then: deferred title
+   reads and crop checks, catalogue lookup (including the author-name check), price research
+   for every identified line, exchange-rate evidence, deterministic valuation and validation.
    `data/claims/<id>/claim_packet.json` and `report.html` are written, the time to packet is
    recorded, and the agent reads back a summary assembled in code from the totals.
    `/bundle` zips the packet, report, referenced frames and a SHA-256 manifest.
@@ -104,7 +184,7 @@ backend/app
 backend/tools            setup_detector.py, evaluate.py, reprocess_sweep.py
 backend/.runtime         downloaded model weights (created by setup_detector.py, git-ignored)
 frontend/src             App.tsx, api.ts, voice.ts, types.ts, components/{Inventory,Conversation}.tsx
-docs/                    how-it-works.md, technical-guide.md
+docs/pdf/                the six documents as PDF (charts rendered)
 data/                    frames/, packets/ (internal state), claims/<id>/ (deliverables); git-ignored
 ```
 
@@ -149,7 +229,7 @@ quote stay blank, are excluded from totals and appear in the review queue. Witho
 credentials most books will have no price; Google Books without an API key shares a daily
 quota and may answer HTTP 429.
 
-**Getting the keys (both free):** [`docs/pricing-api-keys.md`](docs/pricing-api-keys.md) explains why
+**Getting the keys (both free):** [`docs/pdf/pricing-api-keys.pdf`](docs/pdf/pricing-api-keys.pdf) explains why
 the keys are needed, the free limits, and the click-by-click steps; `backend/.env.example` has
 the short version. In short, an eBay
 developer account at developer.ebay.com gives a production App ID and Cert ID (`EBAY_CLIENT_ID`,
@@ -207,7 +287,7 @@ answered; the Gemini Live conversation itself needs a Gemini key and was not exe
 | Backend | Python 3.11+, FastAPI, uvicorn, pydantic 2, httpx, python-dotenv, Pillow, numpy | API, validation, HTTP, images |
 | Frontend | React 19, Vite 6, TypeScript 5.7; browser `SpeechRecognition` and `speechSynthesis` | one-page UI, voice in and out |
 | Tooling | Ruff (format and lint), Ollama 0.20 | code style; local model serving |
-| AI coding tool | Claude Code (Anthropic, Claude Fable 5.1) | pair-programming: scaffolding, refactors, the model comparison scripts, documentation drafts; every line was reviewed and is explained in `docs/technical-guide.md` |
+| AI coding tool | Claude Code (Anthropic, Claude Fable 5.1) | pair-programming: scaffolding, refactors, the model comparison scripts, documentation drafts; every line was reviewed and is explained in `docs/pdf/technical-guide.pdf` |
 
 No model was trained or fine-tuned. All inference is local; the four APIs above are the only
 network calls and are free tiers (call counts are recorded per sweep in `cost`).
@@ -227,6 +307,12 @@ network calls and are free tiers (call counts are recorded per sweep in `cost`).
    `visible_features`, and brand/model from OCR on item crops.
 6. Condition grading per book (spine wear, fade) feeding the used value; an independent
    checker agent that re-reads the packet and reports disagreements.
+7. A written conversational agent next to the voice one. Today the agent is voice-first:
+   the text box on the sweep page runs the same commands and questions, but there is no
+   real typed conversation. I would add a proper chat: multi-turn context, questions about
+   any inventory line ("why is this one unidentified?", "what did you read on that spine?"),
+   corrections in writing with the same evidence rules, and an exportable transcript, so a
+   claimant in a noisy room or without a microphone can complete the sweep by typing.
 
 ## Known limits
 
