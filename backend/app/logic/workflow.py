@@ -12,7 +12,7 @@ from .identification import identify_observation
 from .measurement import Calibration, measure_spine
 from .pricing import EMPTY_ITEM_PRICE, EMPTY_REPLACEMENT, EMPTY_USED, apply_prices
 from .tracking import match_track, retain_observation, scene_transform
-from .utils import event, performance_summary
+from .utils import performance_summary, stamp
 
 
 def now():
@@ -22,7 +22,8 @@ def now():
 def audit(packet, name, **fields):
     entry = {"id": uuid.uuid4().hex, "time": now(), "step": name, **fields}
     packet.setdefault("audit_trail", []).append(entry)
-    event(name, sweep_id=packet["sweep"]["id"], **fields)
+    details = " ".join(f"{key}={value}" for key, value in fields.items())
+    print(f"[DEBUG {stamp()}] {name} sweep_id={packet['sweep']['id']} {details}", flush=True)
     return entry
 
 
@@ -143,6 +144,25 @@ def next_guidance(packet):
             "text": "This shelf is excluded. Move to the next shelf and change its label.",
             "action": "next_shelf",
         }
+    art = next(
+        (
+            i
+            for i in packet["items"]
+            if (
+                any(w in i.get("category", "").lower() for w in ("art", "portrait", "painting"))
+                or (i.get("category") == "mirror" and not i.get("category_verified"))
+            )
+            and "is_print" not in i
+        ),
+        None,
+    )
+    if art:
+        question = (
+            "Is that framed object a mirror, a print or an original artwork? Tell me."
+            if art.get("category") == "mirror"
+            else "Is the artwork an original or a print? Select the item, then tell me."
+        )
+        return {"code": "art", "text": question, "ref_id": art["id"], "action": "answer"}
     if latest.get("vision_status") == "failed":
         reason = (latest.get("notes") or ["analysis failed"])[0]
         return {
@@ -161,22 +181,6 @@ def next_guidance(packet):
             "code": "unreadable",
             "text": "I can log book candidates, but I cannot read their spines. Hold still and move closer without cutting off the stack.",
             "action": "capture",
-        }
-    art = next(
-        (
-            i
-            for i in packet["items"]
-            if any(w in i.get("category", "").lower() for w in ("art", "portrait", "painting"))
-            and "is_print" not in i
-        ),
-        None,
-    )
-    if art:
-        return {
-            "code": "art",
-            "text": "Is the artwork an original or a print? Select the item, then tell me.",
-            "ref_id": art["id"],
-            "action": "answer",
         }
     count = len([b for b in packet["books"] if b.get("shelf") == latest.get("shelf")])
     return {
@@ -289,6 +293,9 @@ def merge_observations(sweep, candidate, shelf, ref):
             "appearance": found.get("appearance"),
             "reader_evidence": found.get("reader_evidence", {}),
             "crop_verification": found.get("crop_verification", {}),
+            # Kept on the line so a deferred crop check can still pass the identity gate later.
+            "count_verified": found.get("count_verified"),
+            "seen_by": found.get("seen_by", []),
             "edition": identity["edition"],
             "isbn": identity["isbn"],
             "spine_height_cm": None,
@@ -303,20 +310,13 @@ def merge_observations(sweep, candidate, shelf, ref):
             if previous.get("exclusion"):
                 continue
         book = retain_observation(packet["books"], previous, book, found, ref)
-        event(
-            "inventory.book.associated",
-            book_id=book["id"],
-            matched=bool(previous),
-            observations=len(book["observations"]),
+        print(
+            f"[DEBUG {stamp()}] inventory.book.associated book_id={book['id']} matched={bool(previous)} observations={len(book['observations'])}",
+            flush=True,
         )
-        event(
-            "book.checked",
-            book_id=book["id"],
-            frame_ref=ref,
-            status=book["status"],
-            confidence=confidence,
-            ocr_match=text_seen,
-            count_agrees=candidate.get("validation", {}).get("agrees"),
+        print(
+            f"[DEBUG {stamp()}] book.checked book_id={book['id']} frame_ref={ref} status={book['status']} confidence={confidence} ocr_match={text_seen} count_agrees={candidate.get('validation', {}).get('agrees')}",
+            flush=True,
         )
         if not identified:
             packet["review_queue"].append(
@@ -365,11 +365,9 @@ def merge_observations(sweep, candidate, shelf, ref):
             if previous.get("exclusion"):
                 continue
         saved = retain_observation(packet["items"], previous, entry, item, ref)
-        event(
-            "inventory.item.associated",
-            item_id=saved["id"],
-            category=saved["category"],
-            matched=bool(previous),
+        print(
+            f"[DEBUG {stamp()}] inventory.item.associated item_id={saved['id']} category={saved['category']} matched={bool(previous)}",
+            flush=True,
         )
     if candidate.get("validation", {}).get("agrees") is not True:
         packet["review_queue"].append(

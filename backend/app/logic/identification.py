@@ -8,6 +8,7 @@ import httpx
 
 from ..config import (
     HTTP_USER_AGENT,
+    OPEN_LIBRARY_AUTHORS_URL,
     OPEN_LIBRARY_BASE_URL,
     OPEN_LIBRARY_BOOKS_URL,
     OPEN_LIBRARY_SEARCH_URL,
@@ -66,6 +67,7 @@ def reading_agreement(book):
     text = " ".join(line["text"] for line in lines)
     supported = [line for line in lines if line["text"].casefold() in title.casefold()]
     confidence = min((line.get("confidence", 0) for line in supported), default=0)
+    author = str(reading.get("author") or book.get("author") or "").strip()
     accepted = bool(
         not book.get("partial")
         and not book.get("fallback")
@@ -74,6 +76,8 @@ def reading_agreement(book):
         and len(title) >= 8
         and title.casefold() in text.casefold()
         and confidence >= 0.9
+        # The writer's credit line is never the title, even when it is the largest text.
+        and not (author and title.casefold() == author.casefold())
     )
     return accepted, confidence
 
@@ -105,7 +109,39 @@ def visible_edition(text):
     return match.group(0) if match else ""
 
 
+KNOWN_AUTHOR_MIN_WORKS = 20
+
+
+async def known_author(name: str, client: httpx.AsyncClient) -> dict | None:
+    """Open Library author record whose name equals `name`, if that person has many works."""
+    response = await client.get(
+        OPEN_LIBRARY_AUTHORS_URL,
+        params={"q": name, "limit": 3},
+        headers={"User-Agent": HTTP_USER_AGENT},
+    )
+    response.raise_for_status()
+    for doc in response.json().get("docs", []):
+        if (
+            normalized(doc.get("name", "")) == normalized(name)
+            and int(doc.get("work_count") or 0) >= KNOWN_AUTHOR_MIN_WORKS
+        ):
+            return doc
+    return None
+
+
 async def resolve_work(book: dict, client: httpx.AsyncClient) -> dict:
+    # A "title" that is a well-known author's name is the writer's credit line, not a work.
+    author = await known_author(book["title"], client)
+    if author:
+        return {
+            "status": "author_as_title",
+            "author": author["name"],
+            "work_count": author.get("work_count"),
+            "source": "Open Library authors",
+            "url": OPEN_LIBRARY_BASE_URL + "authors/" + str(author.get("key", "")),
+            "retrieved_at": datetime.now(UTC).isoformat(),
+            "edition_resolved": False,
+        }
     response = await client.get(
         OPEN_LIBRARY_SEARCH_URL,
         params={"title": book["title"], "limit": 5, "fields": "key,title,author_name"},

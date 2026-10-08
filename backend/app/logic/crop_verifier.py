@@ -97,6 +97,15 @@ def crop_bytes(raw, box):
 
 
 def validate_reply(payload):
+    # With the pre-filled reply the grammar is not enforced, so coerce the two loose fields.
+    if isinstance(payload, dict):
+        clear = payload.get("clear_single_object")
+        if isinstance(clear, str):
+            payload["clear_single_object"] = clear.strip().lower() in {"true", "yes", "1"} or (
+                clear.strip().lower() == str(payload.get("category", "")).lower()
+            )
+        if isinstance(payload.get("visible_features"), list):
+            payload["visible_features"] = ", ".join(str(v) for v in payload["visible_features"])
     if not isinstance(payload, dict) or set(payload) != set(SCHEMA["required"]):
         raise ValueError("Invalid crop verifier schema")
     if (
@@ -136,7 +145,10 @@ async def verify_crop(crop, detector_category, model, *, timeout=45):
                             "role": "user",
                             "content": PROMPT,
                             "images": [base64.b64encode(crop).decode()],
-                        }
+                        },
+                        # Pre-filled empty reasoning: Qwen3 otherwise spends the whole token
+                        # budget thinking and the JSON never arrives (measured on wall frames).
+                        {"role": "assistant", "content": "<think>\n\n</think>\n\n"},
                     ],
                 },
             )
@@ -158,10 +170,15 @@ async def verify_crop(crop, detector_category, model, *, timeout=45):
     }
 
 
+WALL_FRAMES = {"mirror", "framed painting", "portrait"}  # same shape; only the blind check tells
+
+
 async def verify_candidates(raw, books, items, frame_ref=""):
     deadline = time.monotonic() + float(settings.crop_verification_frame_budget_s)
     model = settings.crop_verifier_model
-    for line in books + items:
+    # Wall frames go first: they are few, and the "original or print?" question depends on them.
+    frames = [i for i in items if i.get("category") in WALL_FRAMES]
+    for line in frames + books + [i for i in items if i not in frames]:
         category = "book" if line in books else line["category"]
         try:
             crop, width, height = crop_bytes(raw, line["bbox"])
@@ -202,4 +219,15 @@ async def verify_candidates(raw, books, items, frame_ref=""):
         if category != "book":
             line["category_verified"] = result["agreed"]
             line["reader_category"] = result.get("category", "")
+            seen = result.get("category", "")
+            # A detector cannot tell a mirror from a framed print; a clear blind answer can.
+            if category in WALL_FRAMES and seen in WALL_FRAMES and seen != category:
+                if result.get("clear_single_object") and result.get("visible_features"):
+                    line.update(
+                        detector_category=category,
+                        category=seen,
+                        description=f"{seen} (blind check; detector said {category})",
+                        category_verified=True,
+                    )
+                    line["crop_verification"] = dict(result, status="corrected", agreed=True)
     return books, items

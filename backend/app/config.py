@@ -52,6 +52,9 @@ OPEN_LIBRARY_SEARCH_URL = os.getenv(
     "OPEN_LIBRARY_SEARCH_URL", "https://openlibrary.org/search.json"
 )
 OPEN_LIBRARY_BOOKS_URL = os.getenv("OPEN_LIBRARY_BOOKS_URL", "https://openlibrary.org/api/books")
+OPEN_LIBRARY_AUTHORS_URL = os.getenv(
+    "OPEN_LIBRARY_AUTHORS_URL", "https://openlibrary.org/search/authors.json"
+)
 OPEN_LIBRARY_BASE_URL = os.getenv("OPEN_LIBRARY_BASE_URL", "https://openlibrary.org/")
 GOOGLE_BOOKS_VOLUMES_URL = os.getenv(
     "GOOGLE_BOOKS_URL", "https://www.googleapis.com/books/v1/volumes"

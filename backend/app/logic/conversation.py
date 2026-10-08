@@ -13,7 +13,7 @@ from ..config import settings
 from .measurement import RoomInput, calibrate_from_shelf, room_geometry
 from .pricing import resolve_locale
 from .providers import compare_locale
-from .utils import event
+from .utils import stamp
 from .workflow import audit, now, refresh_workflow
 
 
@@ -89,7 +89,7 @@ def is_explicit_command(value):
             text,
         )
         or re.fullmatch(
-            r"(?:that |this |it )?(?:is |is a |is an )?(?:a |an )?(?:first edition|signed copy|rare edition|antiquarian book|print|original)",
+            r"(?:that |this |it )?(?:is |is a |is an )?(?:a |an )?(?:first edition|signed copy|rare edition|antiquarian book|print|original|mirror)",
             text,
         )
         or re.match(r"(?:the )?title is ", text)
@@ -121,10 +121,13 @@ def respond(packet, turn: Turn, conversational_reply=None):
         in {
             "it is a print",
             "it is an original",
+            "it is a mirror",
             "a print",
             "an original",
+            "a mirror",
             "print",
             "original",
+            "mirror",
         }
     ):
         selected = next(
@@ -172,7 +175,7 @@ def respond(packet, turn: Turn, conversational_reply=None):
     elif text in {"stop talking", "quiet", "pause voice"}:
         reply, action = "Voice output paused.", "mute"
     elif re.fullmatch(
-        r"(?:that |this |it )?(?:is |is a |is an )?(?:a |an )?(?:first edition|signed copy|rare edition|antiquarian book|print|original)",
+        r"(?:that |this |it )?(?:is |is a |is an )?(?:a |an )?(?:first edition|signed copy|rare edition|antiquarian book|print|original|mirror)",
         text,
     ):
         if selected is None:
@@ -191,6 +194,8 @@ def respond(packet, turn: Turn, conversational_reply=None):
                 selected["is_print"], selected["appraisal_required"] = True, False
             elif text.endswith("original") and "category" in selected:
                 selected["is_print"], selected["appraisal_required"] = False, True
+            elif text.endswith("mirror") and "category" in selected:
+                selected.update(category="mirror", is_print=False, appraisal_required=False)
             else:
                 selected["appraisal_required"] = True
             reply = "Applied your correction to the selected item and recorded the source. Special editions and originals require appraisal."
@@ -437,7 +442,7 @@ async def converse(packet, turn):
             try:  # open question: the local chat model answers from the live state
                 reply, mode = await generate_reply(packet, turn), "contextual"
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
-                event("conversation.model.unavailable", level="warning")
+                print(f"[WARN {stamp()}] conversation.model.unavailable", flush=True)
                 reply, mode = fallback(packet, turn), "fallback"
         result = respond(packet, turn, conversational_reply=reply)
         result["conversation_mode"] = mode
