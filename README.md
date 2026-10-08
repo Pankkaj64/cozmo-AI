@@ -22,7 +22,6 @@ Documents (PDF, charts included) in [`docs/pdf/`](docs/pdf/):
 | [failure-log.pdf](docs/pdf/failure-log.pdf) | what broke, root causes, measured fixes, cost and latency |
 | [next-week-plan.pdf](docs/pdf/next-week-plan.pdf) | the improvements planned for the next week, with what is already done |
 | [pricing-api-keys.pdf](docs/pdf/pricing-api-keys.pdf) | why price keys are used, free limits, how to create them step by step |
-| [Pankaj-Yadav-Resume.pdf](docs/pdf/Pankaj-Yadav-Resume.pdf) | the author's resume |
 
 ## Features
 
@@ -394,6 +393,5 @@ network calls and are free tiers (call counts are recorded per sweep in `cost`).
 
 Pankaj Yadav, Forward Deployed Software Engineer (Python, Linux and computer vision), Dubai.
 [github.com/Pankkaj64](https://github.com/Pankkaj64) ·
-[linkedin.com/in/pankkaj64](https://linkedin.com/in/pankkaj64) · resume in
-[`docs/pdf/Pankaj-Yadav-Resume.pdf`](docs/pdf/Pankaj-Yadav-Resume.pdf).
+[linkedin.com/in/pankkaj64](https://linkedin.com/in/pankkaj64).
 
