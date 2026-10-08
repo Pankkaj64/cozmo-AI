@@ -65,16 +65,22 @@ def verification_decision(reading, detector_category):
         "storage rack": "bookshelf",
     }
     category = reading["category"]
+    named_other = str(reading.get("raw_category") or "")  # a concrete object outside the list
     words = set(re.findall(r"[a-z]+", reading["visible_features"].lower()))
     supported = category not in REQUIRED_PARTS or bool(words.intersection(REQUIRED_PARTS[category]))
-    clear = reading["clear_single_object"] and category != "unknown" and supported
+    clear = reading["clear_single_object"] and (category != "unknown" or named_other) and supported
     agreed = clear and aliases.get(detector_category, detector_category) == category
+    reason = (
+        f"Blind check saw a {named_other}, not a {detector_category}"
+        if named_other and clear
+        else "Visible features lack distinguishing object parts"
+        if not supported
+        else ""
+    )
     return {
         "status": "agreed" if agreed else "conflict" if clear else "uncertain",
         "agreed": bool(agreed),
-        **(
-            {"reason": "Visible features lack distinguishing object parts"} if not supported else {}
-        ),
+        **({"reason": reason} if reason else {}),
     }
 
 
@@ -97,8 +103,17 @@ def crop_bytes(raw, box):
 
 
 def validate_reply(payload):
-    # With the pre-filled reply the grammar is not enforced, so coerce the two loose fields.
+    # With the pre-filled reply the grammar is not enforced, so coerce the loose fields.
     if isinstance(payload, dict):
+        category = payload.get("category")
+        if isinstance(category, str):
+            category = category.strip().lower()
+            if category not in CATEGORIES:
+                # "tissue box", "cereal packet"...: a concrete answer outside the list is a
+                # real disagreement with the detector, so keep it instead of failing.
+                payload["raw_category"] = category
+                category = "unknown"
+            payload["category"] = category
         clear = payload.get("clear_single_object")
         if isinstance(clear, str):
             payload["clear_single_object"] = clear.strip().lower() in {"true", "yes", "1"} or (
@@ -106,7 +121,7 @@ def validate_reply(payload):
             )
         if isinstance(payload.get("visible_features"), list):
             payload["visible_features"] = ", ".join(str(v) for v in payload["visible_features"])
-    if not isinstance(payload, dict) or set(payload) != set(SCHEMA["required"]):
+    if not isinstance(payload, dict) or set(payload) - {"raw_category"} != set(SCHEMA["required"]):
         raise ValueError("Invalid crop verifier schema")
     if (
         payload["category"] not in CATEGORIES
