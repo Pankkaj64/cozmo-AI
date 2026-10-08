@@ -11,9 +11,13 @@ text, small Ollama vision/chat models (Gemma 3 4B, Qwen3-VL 2B, Qwen2.5 3B) and 
 React page for the camera and voice. Prices come only from retrievable sources (eBay Browse,
 Google Books, ECB/ER-API exchange rates) and totals are computed in code.
 
-Two guides explain the system: [`docs/how-it-works.md`](docs/how-it-works.md) in plain
-language, step by step, and [`docs/technical-guide.md`](docs/technical-guide.md) with the
-files, functions, objects and libraries at every step.
+Documents: [`docs/how-it-works.md`](docs/how-it-works.md) (plain-language, step by step),
+[`docs/technical-guide.md`](docs/technical-guide.md) (files, functions, objects and libraries
+at every step), [`docs/architecture.md`](docs/architecture.md) (the one-page architecture
+note: pipeline diagram, which model does what, metric scale, price sources) and
+[`docs/failure-log.md`](docs/failure-log.md) (what broke, root causes, measured fixes, cost
+and latency), and [`docs/next-week-plan.md`](docs/next-week-plan.md) (the improvements planned
+for the next week).
 
 ## Install and run
 
@@ -96,7 +100,7 @@ backend/app
     workflow.py          merge frames into the inventory; measurement → pricing → validation
     conversation.py      spoken tools + chat model
     evaluation.py        scoring against a ground-truth file
-    utils.py             logging, stage timing, performance summary
+    utils.py             debug prints, stage timing, performance summary
 backend/tools            setup_detector.py, evaluate.py, reprocess_sweep.py
 backend/.runtime         downloaded model weights (created by setup_detector.py, git-ignored)
 frontend/src             App.tsx, api.ts, voice.ts, types.ts, components/{Inventory,Conversation}.tsx
@@ -145,6 +149,16 @@ quote stay blank, are excluded from totals and appear in the review queue. Witho
 credentials most books will have no price; Google Books without an API key shares a daily
 quota and may answer HTTP 429.
 
+**Getting the keys (both free):** [`docs/pricing-api-keys.md`](docs/pricing-api-keys.md) explains why
+the keys are needed, the free limits, and the click-by-click steps; `backend/.env.example` has
+the short version. In short, an eBay
+developer account at developer.ebay.com gives a production App ID and Cert ID (`EBAY_CLIENT_ID`,
+`EBAY_CLIENT_SECRET`); a Google Cloud project with the Books API enabled gives
+`GOOGLE_BOOKS_API_KEY`. Put them in `backend/.env`, restart, then run
+`python tools/check_price_sources.py` from `backend/`: it makes one real search per source and
+prints the quotes it found. Keys are never committed; for the review they are sent separately
+with the submission.
+
 ## Output contract
 
 `claim_packet.json` has the required keys first and in order: `sweep`, `room`, `books`,
@@ -160,11 +174,69 @@ packet against a ground-truth JSON file: a list of `{"title", "author", "shelf",
 optional items. The score reports identification precision/recall, measurement error and
 price error per line.
 
+## What was kept, changed and discarded from the reference app
+
+The [Insurance Claim Live Agent Team](https://github.com/Shubhamsaboo/awesome-llm-apps/tree/main/voice_ai_agents/insurance_claim_live_agent_team)
+example was read and its FastAPI app run locally first (UI, health and session endpoints
+answered; the Gemini Live conversation itself needs a Gemini key and was not exercised).
+
+- **Kept:** the interaction pattern: one live session where the claimant talks, the camera is
+  on and a claim file builds itself in real time; server-owned state; background agents that
+  finish the packet; a role-labelled transcript; evidence links from every line.
+- **Changed:** Gemini Live replaced by local Ollama models and browser speech (any provider
+  would do); narrative damage descriptions replaced by a measured, counted and priced
+  inventory; one long prompt replaced by separate stages with their own outputs (detection,
+  OCR, identification, measurement, pricing, validation, packet); prices from retrievable
+  sources instead of a model; totals summed in code.
+- **Discarded:** policy lookup, coverage decisions, avatar generation and insurer submission.
+
+## Pretrained models, APIs, libraries and tools used
+
+| Kind | Name | Used for |
+| --- | --- | --- |
+| Detector | YOLO26s, YOLO11s (Ultralytics, COCO-pretrained) | book and object boxes; second-detector witness |
+| Detector | YOLOE-26s (Ultralytics, open vocabulary) + MobileCLIP text encoder | room categories and shelf spines from the word list in `config.py` |
+| OCR | PaddleOCR PP-OCRv6 (PaddlePaddle); EasyOCR as alternative | spine text |
+| Vision-language | Gemma 3 4B (`gemma3:latest`, Google, via Ollama) | title proposal per crop |
+| Vision-language | Qwen3-VL 2B (`qwen3-vl:2b`, Alibaba, via Ollama) | blind crop category check |
+| Language | Qwen2.5 3B (`qwen2.5:3b`, via Ollama) | spoken conversation |
+| Price API | eBay Browse API (OAuth client credentials) | new and used listings, comparables |
+| Price API | Google Books Volumes API | country list prices, catalogue metadata |
+| Catalogue API | Open Library search and books API | work and ISBN resolution |
+| FX API | Frankfurter (ECB rates), ExchangeRate-API as fallback | dated conversion evidence |
+| Backend | Python 3.11+, FastAPI, uvicorn, pydantic 2, httpx, python-dotenv, Pillow, numpy | API, validation, HTTP, images |
+| Frontend | React 19, Vite 6, TypeScript 5.7; browser `SpeechRecognition` and `speechSynthesis` | one-page UI, voice in and out |
+| Tooling | Ruff (format and lint), Ollama 0.20 | code style; local model serving |
+| AI coding tool | Claude Code (Anthropic, Claude Fable 5.1) | pair-programming: scaffolding, refactors, the model comparison scripts, documentation drafts; every line was reviewed and is explained in `docs/technical-guide.md` |
+
+No model was trained or fine-tuned. All inference is local; the four APIs above are the only
+network calls and are free tiers (call counts are recorded per sweep in `cost`).
+
+## What I would do with two more weeks
+
+1. Record the real-room sweep (60+ books, 8+ items), build the ground-truth sheet, and tune
+   nothing until the first honest numbers against every pass bar are in.
+2. Add eBay credentials and a Google Books key, then measure the 15-price sample and the
+   second-country table on real quotes.
+3. Replace frame sampling with a recorded video and server-side frame extraction, so nothing
+   panned past between samples is lost, and pick the sharpest frame per shelf.
+4. A small spine detector fine-tuned on shelf photos (justified: COCO "book" finds 1–17
+   spines on walls where the open-vocabulary model finds 18–51, and neither is trained on
+   spines).
+5. Item dimensions from the same shelf-width scale, material from the blind check's
+   `visible_features`, and brand/model from OCR on item crops.
+6. Condition grading per book (spine wear, fade) feeding the used value; an independent
+   checker agent that re-reads the packet and reports disagreements.
+
 ## Known limits
 
 - An 8 GB laptop needs about 3 minutes for a frame with ten readable books (two model reads
   per book); empty views take about 3 seconds. Time to packet is recorded per sweep.
 - Only what is in a sampled frame is seen; the agent asks the claimant to pause at each
   shelf. Dense shelves of very small spines are detected but rarely identified.
+- A spine whose largest text is the author's name is not identified: the title reader is
+  told names go in `author`, the gate refuses a title equal to the author line, and at
+  finish Open Library's author search demotes any remaining author-as-title to `author`
+  with a review finding. That last check needs the network.
 - The 60-book ground-truth sweep, tape measurements, hand-checked prices and the demo video
   still have to be recorded in a real room.

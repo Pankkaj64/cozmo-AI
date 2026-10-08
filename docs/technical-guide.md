@@ -23,7 +23,7 @@ are exact.
 
 ```
 backend/app/config.py        paths, model names, room classes, API endpoints, Settings (env first)
-backend/app/main.py          FastAPI app, CORS, request logging, health, startup warm-up, static mounts
+backend/app/main.py          FastAPI app, CORS, request debug prints, health, startup warm-up, static mounts
 backend/app/routes.py        every HTTP route (transport only)
 backend/app/logic/
   state.py                   SWEEPS store, checkpoints, start/finish, background research
@@ -40,7 +40,7 @@ backend/app/logic/
   claim.py                   SweepStart, empty_packet, totals, validate_packet, build_claim_packet
   report.py                  report_html, claim_bundle
   evaluation.py              scoring against ground truth
-  utils.py                   event(), trace_step, pipeline_stage, performance_summary
+  utils.py                   stamp(), trace_step, pipeline_stage, performance_summary
 frontend/src/
   App.tsx                    the page: start/stop, capture loop, SSE, voice wiring
   api.ts                     get/post helpers, API base URL
@@ -91,8 +91,8 @@ to `127.0.0.1:8000`, so no CORS is needed. In a production build FastAPI serves
 ## Step 2: startup (`main.py`)
 
 1. `FastAPI(...)`, `CORSMiddleware` from `settings.cors_origins`.
-2. `log_request` middleware sets a `request_id` in `log_context` (a `contextvars.ContextVar`)
-   so every log line in that request carries it.
+2. `log_request` middleware makes a short `request_id` and prints `http.received`,
+   `http.responded` (with status and elapsed time) or `http.failed` for every request.
 3. `@app.on_event("startup")` schedules `perception.warm_models()`: loads the OCR engine in a
    thread and asks Ollama to load the three models with `keep_alive: 30m`, so the first
    frame is not a cold start.
@@ -171,6 +171,14 @@ Details per stage:
 - **`identify_observation` (`identification.py`)**: `status = "identified"` only if
   `title.casefold() in ocr_text`, confidence >= 0.75, `count_verified` (fallback: frame
   `agrees`) and `identity_verified` (reader title == OCR-supported title, crop check agreed).
+- **Author is never the title**, enforced three times. `validated_reading` (`perception.py`)
+  empties the title when the reader's title equals its own author choice; `reading_agreement`
+  refuses a title equal to the author line; and at finish `resolve_work` first asks the Open
+  Library authors search (`OPEN_LIBRARY_AUTHORS_URL`): a title whose exact name is an author
+  with 20+ works returns `author_as_title`, `demote_author_title` (`providers.py`) moves the
+  text to `author`, sets `status = "unidentified"` and `title_rejected`, and `run_research`
+  copies that to the live packet with a review finding. Finish runs research whenever
+  `ENABLE_CATALOGUE_LOOKUP` is on, even with no price keys.
 - **`merge_observations` (`workflow.py`)**: matches frame books to existing inventory lines by
   appearance (`tracking.py`) and scene alignment, creates `book` dicts with contract fields plus
   evidence fields, appends review findings and notes.
@@ -245,9 +253,11 @@ flowchart TD
 
 ## Observability
 
-- `event(name, **fields)`: one JSON log line, merged with the current `log_context`.
-- `@trace_step("name")`: logs `.started`, `.finished` (elapsed), `.failed`, `.cancelled`, and a
-  `.waiting` heartbeat every 10 s for async steps.
+- There is no logging framework. Every step prints one debugger-style line to stdout:
+  `[DEBUG 14:07:11.851] backend.ready detector=yolo26s.pt recovered_sweeps=6`. Warnings use
+  `[WARN ...]` and errors `[ERROR ...]`; `stamp()` in `utils.py` supplies the wall-clock time.
+- `@trace_step("name")`: prints `.started`, `.finished` (elapsed), `.failed`, `.cancelled`, and a
+  `.waiting` heartbeat every 10 s for async steps, with `sweep_id` / `frame_ref` when present.
 - `pipeline_stage` (per frame) and `stage` (per workflow pass) write timings into the packet;
   `GET /{id}/performance` summarises calls, mean and max per stage, and `time_to_packet_s`.
 - `GET /api/health` reports which models and price providers the backend will use.
