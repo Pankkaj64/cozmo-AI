@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import statistics
@@ -28,7 +29,7 @@ from .pricing import (
     rate_key,
     sweep_locale,
 )
-from .utils import event
+from .utils import stamp
 
 
 class ProviderResult(dict):
@@ -85,18 +86,26 @@ class GoogleBooksProvider:
         if book.get("isbn"):
             query = f"isbn:{book['isbn']}"
         else:
-            query = f'intitle:"{book.get("title", "")}"'
-            if book.get("author"):
-                query += f' inauthor:"{book["author"]}"'
+            # Plain text: the intitle:/inauthor: (and isbn:) operators return no volumes any
+            # more (checked 8 Oct 2026). match_score() still rejects listings that do not fit.
+            query = " ".join(filter(None, [book.get("title", ""), book.get("author", "")]))
         params = {
             "q": query,
             "country": locale.country_code,
-            "maxResults": 5,
+            "maxResults": 20,  # most volumes are ebooks or not for sale; look further for print
             "printType": "books",
         }
-        if settings.google_books_api_key:
-            params["key"] = settings.google_books_api_key
-        response = await client.get(GOOGLE_BOOKS_VOLUMES_URL, params=params)
+        # The key travels in a header, so it never appears in URLs, logs or error messages.
+        headers = (
+            {"x-goog-api-key": settings.google_books_api_key}
+            if settings.google_books_api_key
+            else {}
+        )
+        for attempt in range(3):  # Google answers 503 intermittently; retry briefly
+            response = await client.get(GOOGLE_BOOKS_VOLUMES_URL, params=params, headers=headers)
+            if response.status_code != 503 or attempt == 2:
+                break
+            await asyncio.sleep(1 + attempt)
         response.raise_for_status()
         retrieved = datetime.now(UTC).date().isoformat()
         quotes, catalogue = [], []
@@ -197,7 +206,10 @@ class EbayAuth:
         payload = response.json()
         self._token = payload["access_token"]
         self._expires = time.monotonic() + float(payload.get("expires_in", 7200))
-        event("ebay.token.refreshed", expires_in_s=payload.get("expires_in"))
+        print(
+            f"[DEBUG {stamp()}] ebay.token.refreshed expires_in_s={payload.get('expires_in')}",
+            flush=True,
+        )
         return self._token
 
 
@@ -324,11 +336,9 @@ class EbayProvider:
                     quotes.append(chosen)
             except (httpx.HTTPError, ValueError, KeyError) as exc:
                 attempts[kind] = {"status": "unavailable", "error": error_detail(exc)}
-                event(
-                    "ebay.search.unavailable",
-                    level="warning",
-                    kind=kind,
-                    error_type=type(exc).__name__,
+                print(
+                    f"[WARN {stamp()}] ebay.search.unavailable kind={kind} error_type={type(exc).__name__}",
+                    flush=True,
                 )
         return result(
             "candidates" if quotes else "not_found",
@@ -390,7 +400,10 @@ async def fetch_rate(base: str, quote: str, client: httpx.AsyncClient) -> dict |
                     "retrieved_at": retrieved,
                 }
     except (httpx.HTTPError, ValueError) as exc:
-        event("fx.frankfurter.unavailable", level="warning", error_type=type(exc).__name__)
+        print(
+            f"[WARN {stamp()}] fx.frankfurter.unavailable error_type={type(exc).__name__}",
+            flush=True,
+        )
     try:
         response = await client.get(f"{OPEN_ER_API_URL}/{base}")
         response.raise_for_status()
@@ -407,7 +420,10 @@ async def fetch_rate(base: str, quote: str, client: httpx.AsyncClient) -> dict |
                 "retrieved_at": retrieved,
             }
     except (httpx.HTTPError, ValueError) as exc:
-        event("fx.open_er_api.unavailable", level="warning", error_type=type(exc).__name__)
+        print(
+            f"[WARN {stamp()}] fx.open_er_api.unavailable error_type={type(exc).__name__}",
+            flush=True,
+        )
     return None
 
 
@@ -444,6 +460,20 @@ def _record_cost(packet: dict, provider: str, calls: int, elapsed_s: float) -> N
     entry = usage.setdefault(provider, {"calls": 0, "elapsed_s": 0.0})
     entry["calls"] += calls
     entry["elapsed_s"] = round(entry["elapsed_s"] + elapsed_s, 3)
+
+
+def demote_author_title(line: dict, identification: dict) -> None:
+    """The accepted title was a writer's name: keep it as the author, drop the identity."""
+    line.update(
+        proposed_title=line.get("title", ""),
+        title="",
+        author=line.get("author") or line.get("title", ""),
+        status="unidentified",
+        title_rejected=(
+            f"'{line.get('title', '')}' is an author with {identification.get('work_count')} "
+            "works in Open Library, so it cannot be this book's title."
+        ),
+    )
 
 
 async def _catalogue(line: dict, client: httpx.AsyncClient) -> dict:
@@ -496,6 +526,15 @@ async def research_inventory(
                         "status": "unavailable",
                         "error": type(exc).__name__,
                     }
+                if result["identification"].get("status") == "author_as_title":
+                    demote_author_title(line, result["identification"])
+                    results.append(result)
+                    print(
+                        f"[DEBUG {stamp()}] research.line.demoted ref_id={line['id']} "
+                        f"author={result['identification']['author']}",
+                        flush=True,
+                    )
+                    continue
             for provider in providers:
                 started = time.perf_counter()
                 lookup = provider.get_book_quotes if is_book else provider.get_item_quotes
@@ -507,12 +546,9 @@ async def research_inventory(
                         "quotes": [],
                         "error": type(exc).__name__,
                     }
-                    event(
-                        "research.provider.unavailable",
-                        level="warning",
-                        provider=provider.name,
-                        ref_id=line["id"],
-                        error_type=type(exc).__name__,
+                    print(
+                        f"[WARN {stamp()}] research.provider.unavailable provider={provider.name} ref_id={line['id']} error_type={type(exc).__name__}",
+                        flush=True,
                     )
                 elapsed = round(time.perf_counter() - started, 3)
                 _record_cost(packet, provider.name, int(outcome.get("calls", 1)), elapsed)
@@ -529,10 +565,9 @@ async def research_inventory(
                     "candidates" if result["pricing"]["offers"] else "not_found"
                 )
             results.append(result)
-            event(
-                "research.line.finished",
-                ref_id=line["id"],
-                quotes=len(result["pricing"]["offers"]),
+            print(
+                f"[DEBUG {stamp()}] research.line.finished ref_id={line['id']} quotes={len(result['pricing']['offers'])}",
+                flush=True,
             )
         if settings.enable_fx_conversion:
             currencies = {q["currency"] for q in packet["quotes"] if q.get("currency")}
