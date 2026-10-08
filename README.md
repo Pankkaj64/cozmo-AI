@@ -23,7 +23,6 @@ Documents (PDF, charts included) in [`docs/pdf/`](docs/pdf/):
 | [next-week-plan.pdf](docs/pdf/next-week-plan.pdf) | the improvements planned for the next week, with what is already done |
 | [pricing-api-keys.pdf](docs/pdf/pricing-api-keys.pdf) | why price keys are used, free limits, how to create them step by step |
 | [Pankaj-Yadav-Resume.pdf](docs/pdf/Pankaj-Yadav-Resume.pdf) | the author's resume |
-| [Pankaj-Yadav-Resume-AI-Agent-Engineer.docx](docs/Pankaj-Yadav-Resume-AI-Agent-Engineer.docx) | the resume tailored to this role (live voice-and-vision agents), editable Word file |
 
 ## Features
 
