@@ -198,7 +198,10 @@ class Settings:
     # --- transport ----------------------------------------------------------------------
     @property
     def cors_origins(self) -> list[str]:
-        raw = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+        raw = os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:5173,http://127.0.0.1:5173,http://192.168.70.69:5173,https://dfwxkqf8-5173.inc1.devtunnels.ms",
+        )
         return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
