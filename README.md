@@ -55,7 +55,8 @@ Documents (PDF, charts included) in [`docs/pdf/`](docs/pdf/):
   frame beats cut off; the identity gate is run again on the pooled evidence.
 - Per-box second-detector check (`count_verified`), not a frame-wide count.
 - Crop OCR (PaddleOCR): small spines are upscaled two times and contrast-stretched, read at
-  0°, 90°, 270° and finally 180°, with early stop; the OCR time budget scales with the
+  0°, 90°, 270° and finally 180°, with early stop; when the English read is weak, a Hindi
+  (Devanagari) pass runs next, and word matching keeps Hindi vowel signs; the OCR time budget scales with the
   number of spines (10 s floor, 1.5 s per spine, 60 s cap).
 - Title reader (Gemma 3 4B) limited to 60 s per live frame, best-evidenced crops first; the
   rest are read after capture. Author and publisher may only be copied from OCR lines.
@@ -80,7 +81,9 @@ Documents (PDF, charts included) in [`docs/pdf/`](docs/pdf/):
 - Spine height and thickness in cm from a stated shelf width; floor and wall areas from
   stated room dimensions; method, source and confidence stored on every measurement.
 - Prices only from retrievable sources: eBay Browse (new → replacement, used → used value),
-  Google Books list prices, Open Library catalogue, dated ECB / ER-API exchange rates.
+  Google Books list prices, Open Library catalogue, dated ECB / ER-API exchange rates. An
+  ISBN is looked up in Google Books / Open Library for every identified title (edition
+  assumed and labelled) and searched on eBay first; each price carries the listing range.
   Deterministic rules choose and reject candidates and keep every reason in
   `price_details`; a second-country comparison table on request.
 - Appraisal routing for signed, rare and first editions, original art and anything at or
@@ -144,7 +147,7 @@ All settings are read from `backend/.env` first and fall back to the defaults in
 `backend/app/config.py`. `backend/model_choices.env` holds the model profile and is read
 after `.env`. Every variable is documented in `backend/.env.example`: model names, Ollama
 URL, OCR engine (`paddle` or `easyocr`), price-source credentials, endpoint overrides,
-pricing rules, CORS, the per-frame budgets (`BOOK_READER_FRAME_BUDGET_S`,
+extra OCR languages (`OCR_EXTRA_LANGS`, default `hi` for Hindi), pricing rules, the catalogue ISBN step (`RESOLVE_CATALOGUE_ISBN`), CORS, the per-frame budgets (`BOOK_READER_FRAME_BUDGET_S`,
 `CROP_VERIFICATION_FRAME_BUDGET_S`) and the tiled-detection switch (`DETECTOR_TILES`).
 
 ## How a sweep works
@@ -232,6 +235,17 @@ flagged). The same values can be posted to `/calibration`, `/spine-bounds`, `/ro
 `/item-measurement` with explicit pixel points. Unknown measurements stay `null`.
 
 ## Pricing
+
+Book pricing follows one fixed flow: identified title and author → Google Books / Open Library
+(confirm the work) → ISBN (read off the book when visible; otherwise the most relevant printed
+English-language edition whose title and author match, stored as `catalogue_isbn` with
+`isbn_source` "… edition assumed") → eBay search by ISBN, falling back to title and author when
+fewer than two listings match → new listings give the replacement cost, used listings the used
+value → median plus a range (count, low, 25th percentile, median, 75th percentile, high) →
+conversion to the claim currency with a dated rate. eBay's public Browse API returns current
+listings only, so prices are asking prices; sold prices need eBay's Marketplace Insights API,
+which requires approval. The catalogue ISBN only steers the search: it never changes the
+identified title, and `RESOLVE_CATALOGUE_ISBN=false` turns the step off.
 
 Providers return quotes with source, URL, retrieval date, condition, currency and a
 title/author match score. Valuation is deterministic: operator-checked offers outrank
