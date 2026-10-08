@@ -516,6 +516,11 @@ async def detect_frame_objects(
     return books, items, primary_books
 
 
+def ocr_evidence(book: dict) -> float:
+    """Confident OCR characters on the crop; decides which crops the live reader sees first."""
+    return sum(len(line["text"]) * line["confidence"] for line in book.get("ocr_lines", []))
+
+
 async def read_frame_spines(
     raw: bytes, books: list[dict], items: list[dict], candidate: dict
 ) -> tuple[list[dict], list[dict]]:
@@ -528,9 +533,25 @@ async def read_frame_spines(
         )
         for b in books:
             b["ocr_errors"].append(type(exc).__name__)
-    accepted = []
-    for book in books:
+    keep: set[int] = set()  # books that stay on the frame, in detector order
+    budget = float(settings.book_reader_frame_budget_s)
+    deadline = time.monotonic() + budget
+    deferred = 0
+    # Crops with the most confident OCR text are read first; the rest wait for the
+    # after-capture pass, so a dense shelf cannot stall the live loop.
+    for book in sorted(books, key=ocr_evidence, reverse=True):
         if book.get("ocr_lines") and BOOK_READER_MODEL:
+            if time.monotonic() >= deadline:
+                if book.get("fallback"):
+                    continue  # a "phone" box with no title read stays a phone
+                book["reader_evidence"] = {
+                    "status": "deferred",
+                    "model": BOOK_READER_MODEL,
+                    "reason": "Frame title-reader budget reached; read after capture stops",
+                }
+                deferred += 1
+                keep.add(id(book))
+                continue
             try:
                 reading = await read_visual_title(raw, book)
                 book["author"], book["publisher"] = (
@@ -578,8 +599,16 @@ async def read_frame_spines(
                     continue
         elif book.get("fallback"):
             continue
-        accepted.append(book)
-    books = accepted
+        keep.add(id(book))
+    books = [b for b in books if id(b) in keep]
+    if deferred:
+        candidate["notes"].append(
+            f"{deferred} title reads deferred to after capture (reader budget {budget:.0f} s)."
+        )
+        print(
+            f"[DEBUG {stamp()}] book.reader.deferred count={deferred} budget_s={budget:.0f}",
+            flush=True,
+        )
     items = [i for i in items if not any(overlap(i["bbox"], b["bbox"]) > 0.5 for b in books)]
     candidate["ocr_text"] = list(
         dict.fromkeys(line["text"] for b in books for line in b.get("ocr_lines", []))

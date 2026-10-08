@@ -265,7 +265,10 @@ def schedule_deferred_verification(sweep_id: str) -> None:
     pending = [
         line
         for line in packet["books"] + packet["items"]
-        if (line.get("crop_verification") or {}).get("status") == "deferred"
+        if (
+            (line.get("crop_verification") or {}).get("status") == "deferred"
+            or (line.get("reader_evidence") or {}).get("status") == "deferred"
+        )
         and not line.get("identity_source")
     ]
     if not pending:
@@ -277,6 +280,39 @@ def schedule_deferred_verification(sweep_id: str) -> None:
     }
     save_active_sweep(sweep_id)
     CROP_VERIFICATION_TASKS[sweep_id] = asyncio.create_task(verify_deferred(sweep_id, pending))
+
+
+async def read_deferred_title(packet: dict, line: dict, candidate: dict, raw: bytes) -> None:
+    """Run the title reader on a crop the live frame budget skipped; proposals only."""
+    from .perception import BOOK_READER_MODEL, read_visual_title
+
+    try:
+        reading = await read_visual_title(raw, candidate)
+    except Exception as exc:  # noqa: BLE001 - one unreadable crop must not stop the pass
+        line["reader_evidence"] = {
+            "status": "unavailable",
+            "model": BOOK_READER_MODEL,
+            "reason": type(exc).__name__,
+        }
+        return
+    line["reader_evidence"] = dict(reading, model=BOOK_READER_MODEL, status="proposal")
+    line["proposed_author"] = reading.get("author", "")
+    line["proposed_publisher"] = reading.get("publisher", "")
+    if reading["is_book"] and reading["title"]:
+        line["proposed_title"] = reading["title"]
+    elif reading["is_book"] is False:
+        finding = {
+            "ref_id": line["id"],
+            "reason": "Crop reader says this box is not a book; the line stays unidentified for review.",
+            "origin": "deferred_reader",
+        }
+        if finding not in packet["review_queue"]:
+            packet["review_queue"].append(finding)
+    print(
+        f"[DEBUG {stamp()}] book.reader.deferred.complete ref_id={line['id']} "
+        f"is_book={reading['is_book']} proposed_title={bool(reading['title'])}",
+        flush=True,
+    )
 
 
 async def verify_deferred(sweep_id: str, pending: list[dict]) -> None:
@@ -292,24 +328,28 @@ async def verify_deferred(sweep_id: str, pending: list[dict]) -> None:
                 if path.is_relative_to(FRAME_DIR.resolve()) and path.is_file():
                     candidate = dict(line, bbox=line.get("object_bbox") or line.get("bbox"))
                     is_book = line in packet["books"]
-                    await verify_candidates(
-                        path.read_bytes(),
-                        [candidate] if is_book else [],
-                        [] if is_book else [candidate],
-                        ref,
-                    )
-                    # A review received while inference ran takes precedence.
-                    if not line.get("identity_source"):
-                        line["crop_verification"] = candidate["crop_verification"]
-                        if is_book:
-                            frame = next(
-                                (f for f in packet.get("frames", []) if f["frame_ref"] == ref),
-                                {},
-                            )
-                            promote_verified_book(line, frame.get("validation", {}))
-                        else:
-                            line["category_verified"] = candidate["category_verified"]
-                            line["reader_category"] = candidate.get("reader_category", "")
+                    raw = path.read_bytes()
+                    if is_book and (line.get("reader_evidence") or {}).get("status") == "deferred":
+                        await read_deferred_title(packet, line, candidate, raw)
+                    if (line.get("crop_verification") or {}).get("status") == "deferred":
+                        await verify_candidates(
+                            raw,
+                            [candidate] if is_book else [],
+                            [] if is_book else [candidate],
+                            ref,
+                        )
+                        # A review received while inference ran takes precedence.
+                        if not line.get("identity_source"):
+                            line["crop_verification"] = candidate["crop_verification"]
+                            if not is_book:
+                                line["category_verified"] = candidate["category_verified"]
+                                line["reader_category"] = candidate.get("reader_category", "")
+                    if is_book and not line.get("identity_source"):
+                        frame = next(
+                            (f for f in packet.get("frames", []) if f["frame_ref"] == ref),
+                            {},
+                        )
+                        promote_verified_book(line, frame.get("validation", {}))
                 else:
                     line["crop_verification"] = {
                         "agreed": False,

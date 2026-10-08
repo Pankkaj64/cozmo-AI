@@ -117,6 +117,11 @@ class Settings:
         return _number("CROP_VERIFICATION_FRAME_BUDGET_S", "90")
 
     @property
+    def book_reader_frame_budget_s(self) -> float:
+        """Seconds of title reading per live frame; the rest is read after capture stops."""
+        return _number("BOOK_READER_FRAME_BUDGET_S", "60")
+
+    @property
     def conversation_model(self) -> str:
         return os.getenv("CONVERSATION_MODEL", DEFAULT_CONVERSATION_MODEL)
 
