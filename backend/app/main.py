@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config
 from .config import settings
 from .logic import perception, state
-from .logic.utils import event, log_context
+from .logic.utils import stamp
 from .routes import ROUTERS
 
 app = FastAPI(title="Library Contents Claim Agent", version="0.3.0")
@@ -28,24 +28,29 @@ app.add_middleware(
 @app.middleware("http")
 async def log_request(request: Request, call_next):
     request_id = uuid.uuid4().hex[:12]
-    token = log_context.set({"request_id": request_id})
     started = time.perf_counter()
-    event("http.received", method=request.method, path=request.url.path)
+    print(
+        f"[DEBUG {stamp()}] http.received request_id={request_id} "
+        f"method={request.method} path={request.url.path}",
+        flush=True,
+    )
     try:
         response = await call_next(request)
-        event(
-            "http.responded",
-            level="warning" if response.status_code >= 400 else "info",
-            status=response.status_code,
-            elapsed_s=round(time.perf_counter() - started, 3),
+        level = "WARN" if response.status_code >= 400 else "DEBUG"
+        print(
+            f"[{level} {stamp()}] http.responded request_id={request_id} "
+            f"status={response.status_code} elapsed_s={round(time.perf_counter() - started, 3)}",
+            flush=True,
         )
         response.headers["X-Request-ID"] = request_id
         return response
     except Exception as exc:
-        event("http.failed", level="error", error_type=type(exc).__name__, error=str(exc))
+        print(
+            f"[ERROR {stamp()}] http.failed request_id={request_id} "
+            f"error_type={type(exc).__name__} error={exc}",
+            flush=True,
+        )
         raise
-    finally:
-        log_context.reset(token)
 
 
 @app.on_event("startup")
@@ -82,10 +87,9 @@ for directory in (config.FRAME_DIR, config.PACKET_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 app.mount("/data", StaticFiles(directory=config.DATA_DIR), name="evidence")
 state.restore_active_sweeps()
-event(
-    "backend.ready",
-    detector=settings.detector_model,
-    recovered_sweeps=len(state.SWEEPS),
+print(
+    f"[DEBUG {stamp()}] backend.ready detector={settings.detector_model} recovered_sweeps={len(state.SWEEPS)}",
+    flush=True,
 )
 
 # The built UI shares the API origin; suitable behind an HTTPS reverse proxy for phones.

@@ -28,7 +28,7 @@ from .logic.pricing import (
 )
 from .logic.providers import compare_locale, configured_providers
 from .logic.report import claim_bundle, report_html
-from .logic.utils import event, performance_summary, trace_step
+from .logic.utils import performance_summary, stamp, trace_step
 from .logic.workflow import audit, merge_observations, now, refresh_workflow, stage
 
 app = FastAPI(title="Library Contents Claim Agent", version="0.3.0")
@@ -135,7 +135,10 @@ async def finish(sweep_id: str):
     task = state.LIVE_RESEARCH_TASKS.get(sweep_id)
     if task and not task.done():
         await task
-    if sweep.get("status") != "finished" and settings.any_price_source_configured:
+    # Research also runs the keyless Open Library catalogue check, so it is not tied to price keys.
+    if sweep.get("status") != "finished" and (
+        settings.any_price_source_configured or settings.enable_catalogue_lookup
+    ):
         await state.run_research(sweep_id)
     result = state.finish_sweep(sweep_id)
     state.schedule_deferred_verification(sweep_id)
@@ -176,14 +179,17 @@ async def add_frame(
     if sweep_id in state.ACTIVE_FRAMES:
         raise HTTPException(409, "A frame is already processing for this sweep")
     raw = await image.read(MAX_FRAME_BYTES + 1)
-    event("frame.received", bytes=len(raw), shelf=shelf, content_type=image.content_type)
+    print(
+        f"[DEBUG {stamp()}] frame.received bytes={len(raw)} shelf={shelf} content_type={image.content_type}",
+        flush=True,
+    )
     if len(raw) > MAX_FRAME_BYTES:
         raise HTTPException(413, "Frame must be under 12 MB")
     name = f"{sweep_id}-{uuid.uuid4().hex}.jpg"
     state.FRAME_DIR.mkdir(parents=True, exist_ok=True)
     (state.FRAME_DIR / name).write_bytes(raw)
     ref = f"data/frames/{name}"
-    event("frame.saved", frame_ref=ref, bytes=len(raw))
+    print(f"[DEBUG {stamp()}] frame.saved frame_ref={ref} bytes={len(raw)}", flush=True)
     analysis_started = time.perf_counter()
     try:
         quality = capture_quality(raw)

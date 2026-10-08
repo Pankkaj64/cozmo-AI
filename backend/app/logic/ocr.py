@@ -12,7 +12,7 @@ from paddleocr import PaddleOCR
 from PIL import Image
 
 from ..config import settings
-from .utils import event
+from .utils import stamp
 
 # One engine instance per process; loading weights is slow, reading is cheap.
 _engine = None
@@ -27,7 +27,9 @@ def _load_engine():
         if _engine is not None:
             return _engine
         name = settings.ocr_engine
-        event("ocr.engine.load", engine=name, lang=settings.ocr_lang)
+        print(
+            f"[DEBUG {stamp()}] ocr.engine.load engine={name} lang={settings.ocr_lang}", flush=True
+        )
         if name == "easyocr":
             _engine = ("easyocr", easyocr.Reader([settings.ocr_lang], gpu=False, verbose=False))
         elif name == "paddle":

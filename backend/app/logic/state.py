@@ -16,7 +16,7 @@ from .claim import SweepStart, build_claim_packet, empty_packet
 from .identification import promote_verified_book
 from .providers import research_inventory
 from .report import report_html
-from .utils import event, performance_summary, trace_step
+from .utils import performance_summary, stamp, trace_step
 from .workflow import now, refresh_workflow, stage
 
 ROOT = config.ROOT_DIR
@@ -39,7 +39,7 @@ def save_active_sweep(sweep_id: str) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(sweep), encoding="utf-8")
     temporary.replace(path)
-    event("sweep.checkpoint.saved", path=str(path))
+    print(f"[DEBUG {stamp()}] sweep.checkpoint.saved path={str(path)}", flush=True)
 
 
 def restore_active_sweeps() -> None:
@@ -47,9 +47,15 @@ def restore_active_sweeps() -> None:
         try:
             sweep = json.loads(path.read_text(encoding="utf-8"))
             SWEEPS[sweep["packet"]["sweep"]["id"]] = sweep
-            event("sweep.restored", sweep_id=sweep["packet"]["sweep"]["id"])
+            print(
+                f"[DEBUG {stamp()}] sweep.restored sweep_id={sweep['packet']['sweep']['id']}",
+                flush=True,
+            )
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-            event("sweep.restore.skipped", level="warning", path=str(path), error=str(exc))
+            print(
+                f"[WARN {stamp()}] sweep.restore.skipped path={str(path)} error={str(exc)}",
+                flush=True,
+            )
 
 
 def require_sweep(sweep_id: str) -> dict:
@@ -102,7 +108,7 @@ def start_sweep(start: SweepStart) -> dict:
     }
     refresh_workflow(packet)
     save_active_sweep(sweep_id)
-    event("sweep.created", sweep_id=sweep_id)
+    print(f"[DEBUG {stamp()}] sweep.created sweep_id={sweep_id}", flush=True)
 
     return {"sweep_id": sweep_id, "packet": packet}
 
@@ -131,7 +137,10 @@ def write_exports(packet: dict) -> tuple[str, str]:
         json.dumps(build_claim_packet(packet), indent=2), encoding="utf-8"
     )
     (claim_dir / "report.html").write_text(report_html(packet), encoding="utf-8")
-    event("packet.exports.saved", sweep_id=sweep_id, claim_dir=str(claim_dir))
+    print(
+        f"[DEBUG {stamp()}] packet.exports.saved sweep_id={sweep_id} claim_dir={str(claim_dir)}",
+        flush=True,
+    )
     return (
         str((claim_dir / "claim_packet.json").relative_to(ROOT)),
         str((claim_dir / "report.html").relative_to(ROOT)),
@@ -159,11 +168,9 @@ def finish_sweep(sweep_id: str) -> dict:
     with stage(packet, "claim_packet"):
         json_file, report_file = write_exports(packet)
     packet["performance"] = performance_summary(packet)
-    event(
-        "packet.totals.calculated",
-        books=packet["totals"]["book_count"],
-        items=len(packet["items"]),
-        review_flags=len(packet["review_queue"]),
+    print(
+        f"[DEBUG {stamp()}] packet.totals.calculated books={packet['totals']['book_count']} items={len(packet['items'])} review_flags={len(packet['review_queue'])}",
+        flush=True,
     )
     sweep["status"] = "finished"
     save_active_sweep(sweep_id)
@@ -189,6 +196,16 @@ async def run_research(sweep_id: str) -> dict:
         for observed in snapshot["books"]:
             source = observed.get("identity_source", {})
             current = next((b for b in packet["books"] if b["id"] == observed["id"]), None)
+            if current and observed.get("title_rejected") and not current.get("identity_source"):
+                for key in ("proposed_title", "title", "author", "status", "title_rejected"):
+                    current[key] = observed[key]
+                finding = {
+                    "ref_id": current["id"],
+                    "reason": observed["title_rejected"],
+                    "origin": "research",
+                }
+                if finding not in packet["review_queue"]:
+                    packet["review_queue"].append(finding)
             if (
                 current
                 and source.get("source") == "Open Library ISBN edition record"
@@ -213,7 +230,7 @@ async def _live_research(sweep_id: str) -> None:
     try:
         await run_research(sweep_id)
     except Exception as exc:  # noqa: BLE001 - background task must never crash the server
-        event("research.live.failed", level="warning", error_type=type(exc).__name__)
+        print(f"[WARN {stamp()}] research.live.failed error_type={type(exc).__name__}", flush=True)
 
 
 def schedule_live_research(sweep_id: str) -> None:
@@ -307,10 +324,9 @@ async def verify_deferred(sweep_id: str, pending: list[dict]) -> None:
     except Exception as exc:  # noqa: BLE001 - record and keep the sweep usable
         packet["verification_progress"].update(status="failed", reason=type(exc).__name__)
         save_active_sweep(sweep_id)
-        event(
-            "crop_verification.background.failed",
-            level="warning",
-            error_type=type(exc).__name__,
+        print(
+            f"[WARN {stamp()}] crop_verification.background.failed error_type={type(exc).__name__}",
+            flush=True,
         )
 
 
