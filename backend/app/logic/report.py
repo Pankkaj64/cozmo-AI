@@ -34,6 +34,17 @@ def frame_link(ref: str) -> str:
     return link(ref, "frame") if ref else ""
 
 
+def range_note(spread: dict | None) -> str:
+    """One line under a book price: how many listings, low–high and the middle half."""
+    if not spread:
+        return ""
+    return (
+        f'<br><span class="muted">{cell(spread["count"])} listings: {cell(spread["low"])}–'
+        f"{cell(spread['high'])} {escape(str(spread['currency']))}, middle half "
+        f"{cell(spread['p25'])}–{cell(spread['p75'])}</span>"
+    )
+
+
 def price_cell(price: dict, currency: str, amount_key: str = "amount") -> str:
     amount = price.get(amount_key)
     if amount is None:
@@ -190,14 +201,17 @@ def report_html(packet: dict) -> str:
                     else ""
                 )
                 + (
-                    f'<br><span class="muted">ISBN {cell(book["isbn"])}</span>'
+                    f'<br><span class="muted">ISBN {cell(book["isbn"])}'
+                    + (f" · {cell(book.get('isbn_source'))}" if book.get("isbn_source") else "")
+                    + "</span>"
                     if book["isbn"]
                     else ""
                 ),
                 f'{cell(book["status"]).replace("_", " ")}<br><span class="muted">conf. {cell(book["id_confidence"])}</span>',
                 spine,
-                price_cell(book["replacement_cost"], currency),
-                price_cell(book["used_value"], currency),
+                price_cell(book["replacement_cost"], currency)
+                + range_note(book.get("replacement_range")),
+                price_cell(book["used_value"], currency) + range_note(book.get("used_range")),
                 frame_link(book["frame_ref"]),
                 "<br>".join(cell(r) for r in reasons.get(book["id"], [])),
             ]

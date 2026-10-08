@@ -345,7 +345,7 @@ def contract_book(book: dict) -> dict:
         "title": _text(book.get("title")),
         "author": _text(book.get("author")),
         "edition": _text(book.get("edition")),
-        "isbn": _text(book.get("isbn")),
+        "isbn": _text(book.get("isbn") or book.get("catalogue_isbn")),
         "spine_height_cm": _num(book.get("spine_height_cm")),
         "spine_thickness_cm": _num(book.get("spine_thickness_cm")),
         "id_confidence": round(float(book.get("id_confidence") or 0), 3),
@@ -356,6 +356,11 @@ def contract_book(book: dict) -> dict:
             book.get("used_value"), ("amount", "source", "url", "retrieved_at", "condition_assumed")
         ),
         # Added fields
+        "isbn_source": _text(
+            "Visible on the book" if book.get("isbn") else book.get("isbn_source")
+        ),
+        "replacement_range": (book.get("replacement_cost") or {}).get("price_range"),
+        "used_range": (book.get("used_value") or {}).get("price_range"),
         "publisher": _text(book.get("publisher")),
         "identity_source": _text(
             (book.get("identity_source") or {}).get("source")

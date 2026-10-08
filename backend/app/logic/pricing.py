@@ -49,6 +49,8 @@ class Quote(BaseModel):
     provider: str = ""
     listing_title: str = ""
     comparables: list[dict] = Field(default_factory=list)
+    price_range: dict | None = None  # low / quartiles / median / high of matching listings
+    search_basis: str = ""  # which search found it: visible ISBN, catalogue ISBN, title+author
     # Conversion evidence supplied with the quote itself (operator-entered foreign offers).
     target_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     fx_rate: float | None = Field(default=None, gt=0, allow_inf_nan=False)
@@ -341,6 +343,8 @@ def _summary(quote: Quote) -> dict:
         "match_score": quote.match_score,
         "listing_title": quote.listing_title,
         "is_ebook": quote.is_ebook,
+        "search_basis": quote.search_basis,
+        "price_range": quote.price_range,
     }
 
 
@@ -413,6 +417,17 @@ def _priced(quote: Quote, fx: dict | None, currency: str, low: float, high: floa
         "original_amount": low,
         "original_currency": quote.currency,
     }
+    if quote.price_range:
+        # The range is converted with the same dated rate as the selected amount.
+        value["price_range"] = {
+            **quote.price_range,
+            **{
+                k: money(Decimal(str(quote.price_range[k])) * rate)
+                for k in ("low", "p25", "median", "p75", "high")
+            },
+            "currency": currency,
+            "original_currency": quote.price_range.get("currency", quote.currency),
+        }
     if fx:
         value.update(
             fx_rate=fx["rate"],

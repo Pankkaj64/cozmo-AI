@@ -140,6 +140,11 @@ class Settings:
         return _flag("ENABLE_CATALOGUE_LOOKUP")
 
     @property
+    def resolve_catalogue_isbn(self) -> bool:
+        """Look up an ISBN for an identified title in Google Books / Open Library before eBay."""
+        return _flag("RESOLVE_CATALOGUE_ISBN", "true")
+
+    @property
     def enable_live_research(self) -> bool:
         return _flag("ENABLE_LIVE_RESEARCH")
 

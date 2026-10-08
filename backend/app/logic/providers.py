@@ -16,10 +16,13 @@ from ..config import (
     EBAY_OAUTH_SCOPE,
     FRANKFURTER_URL,
     GOOGLE_BOOKS_VOLUMES_URL,
+    HTTP_USER_AGENT,
     OPEN_ER_API_URL,
+    OPEN_LIBRARY_BASE_URL,
+    OPEN_LIBRARY_SEARCH_URL,
     settings,
 )
-from .identification import resolve_isbn, resolve_work
+from .identification import resolve_isbn, resolve_work, valid_isbn
 from .pricing import (
     Locale,
     apply_prices,
@@ -66,6 +69,134 @@ def error_detail(exc: Exception) -> str:
         hint = " (shared keyless quota exhausted; set GOOGLE_BOOKS_API_KEY)" if code == 429 else ""
         return f"HTTP {code}{hint}"
     return type(exc).__name__
+
+
+def price_range(quotes: list[dict]) -> dict:
+    """Low, quartiles, median and high of the matching listings in their own currency."""
+    currency = quotes[0]["currency"]
+    amounts = sorted(q["amount"] for q in quotes if q["currency"] == currency)
+    if len(amounts) >= 2:
+        p25, median, p75 = statistics.quantiles(amounts, n=4, method="inclusive")
+    else:
+        p25 = median = p75 = amounts[0]
+    return {
+        "count": len(amounts),
+        "low": amounts[0],
+        "p25": round(p25, 2),
+        "median": round(median, 2),
+        "p75": round(p75, 2),
+        "high": amounts[-1],
+        "currency": currency,
+        "basis": "current fixed-price listings (asking prices); sold prices need eBay Marketplace Insights",
+    }
+
+
+async def resolve_catalogue_isbn(line: dict, client: httpx.AsyncClient) -> dict:
+    """Find an ISBN for an identified title: Google Books first, then Open Library.
+
+    A title has many editions, so this ISBN is the most relevant printed edition whose title
+    and author match, recorded as `edition assumed`. It steers the eBay search; it never
+    changes the identified title or author.
+    """
+    title, author = line.get("title", ""), line.get("author", "")
+    wanted = normalized(title)
+    surname = normalized(author).split()[-1:] if author else []
+
+    def fits(found_title: str, found_authors: list[str]) -> bool:
+        name = normalized(found_title)
+        if not (name == wanted or name.startswith(wanted + " ")):
+            return False
+        return not surname or any(surname[0] in normalized(a).split() for a in found_authors)
+
+    calls, tried = 0, []
+    retrieved = datetime.now(UTC).isoformat()
+    try:
+        headers = (
+            {"x-goog-api-key": settings.google_books_api_key}
+            if settings.google_books_api_key
+            else {}
+        )
+        for attempt in range(3):  # Google answers 503 intermittently; retry briefly
+            calls += 1
+            response = await client.get(
+                GOOGLE_BOOKS_VOLUMES_URL,
+                params={
+                    "q": " ".join(filter(None, [title, author])),
+                    "maxResults": 20,
+                    "printType": "books",
+                },
+                headers=headers,
+            )
+            if response.status_code != 503 or attempt == 2:
+                break
+            await asyncio.sleep(1 + attempt)
+        response.raise_for_status()
+        fitting = []
+        for volume in response.json().get("items", []):
+            info = volume.get("volumeInfo", {})
+            if not fits(info.get("title", ""), info.get("authors", [])):
+                continue
+            ids = {i.get("type"): i.get("identifier") for i in info.get("industryIdentifiers", [])}
+            isbn = valid_isbn(ids.get("ISBN_13")) or valid_isbn(ids.get("ISBN_10"))
+            if isbn:
+                fitting.append((info, isbn))
+        # Google ranks by relevance; among the matches prefer an English-language edition.
+        fitting.sort(key=lambda pair: pair[0].get("language") != "en")
+        if fitting:
+            info, isbn = fitting[0]
+            return {
+                "status": "resolved",
+                "isbn": isbn,
+                "candidates": [i for _, i in fitting][:10],
+                "source": "Google Books volume matching title and author",
+                "url": info.get("canonicalVolumeLink") or info.get("infoLink", ""),
+                "edition_assumed": True,
+                "edition_note": " ".join(
+                    filter(None, [info.get("publisher", ""), info.get("publishedDate", "")])
+                ),
+                "retrieved_at": retrieved,
+                "calls": calls,
+            }
+    except httpx.HTTPError as exc:
+        tried.append(f"google_books unavailable: {error_detail(exc)}")
+    try:
+        calls += 1
+        response = await client.get(
+            OPEN_LIBRARY_SEARCH_URL,
+            params={
+                "title": title,
+                **({"author": author} if author else {}),
+                "limit": 5,
+                "fields": "key,title,author_name,isbn",
+            },
+            headers={"User-Agent": HTTP_USER_AGENT},
+        )
+        response.raise_for_status()
+        for doc in response.json().get("docs", []):
+            if not fits(doc.get("title", ""), doc.get("author_name", [])):
+                continue
+            isbns = [valid_isbn(i) for i in doc.get("isbn", [])]
+            # 978-0 and 978-1 are the English-language registration groups; prefer them.
+            isbn = (
+                next((i for i in isbns if i.startswith(("9780", "9781"))), "")
+                or next((i for i in isbns if len(i) == 13), "")
+                or next((i for i in isbns if i), "")
+            )
+            if isbn:
+                return {
+                    "status": "resolved",
+                    "isbn": isbn,
+                    "candidates": [i for i in isbns if i][:10],
+                    "source": "Open Library work matching title and author",
+                    "url": OPEN_LIBRARY_BASE_URL + doc.get("key", "").lstrip("/"),
+                    "edition_assumed": True,
+                    "edition_note": "",
+                    "retrieved_at": retrieved,
+                    "calls": calls,
+                }
+    except httpx.HTTPError as exc:
+        tried.append(f"open_library unavailable: {error_detail(exc)}")
+    return {"status": "not_found", "candidates": tried, "calls": calls}
 
 
 def result(status: str, quotes: list[dict] | None = None, **fields) -> ProviderResult:
@@ -237,7 +368,7 @@ class EbayProvider:
         marketplace = settings.ebay_marketplace_id or locale.ebay_marketplace
         response = await client.get(
             f"{_base_url()}/buy/browse/v1/item_summary/search",
-            params={"q": query[:150], "limit": 10, "filter": filters},
+            params={"q": query[:150], "limit": 50, "filter": filters},  # enough for a range
             headers={
                 "Authorization": f"Bearer {await self.auth.token(client)}",
                 "X-EBAY-C-MARKETPLACE-ID": marketplace,
@@ -246,7 +377,15 @@ class EbayProvider:
         response.raise_for_status()
         return response.json().get("itemSummaries", [])
 
-    def _quotes(self, line: dict, kind: str, listings: list[dict], locale: Locale) -> list[dict]:
+    def _quotes(
+        self,
+        line: dict,
+        kind: str,
+        listings: list[dict],
+        locale: Locale,
+        *,
+        isbn_search: bool = False,
+    ) -> list[dict]:
         retrieved = datetime.now(UTC).date().isoformat()
         quotes = []
         for item in listings:
@@ -261,6 +400,10 @@ class EbayProvider:
                 )
             else:
                 score, basis = match_score(line, listing_title)
+                if isbn_search:
+                    # eBay matched the ISBN in the item specifics; the title check still has to
+                    # agree, so a mislisted ISBN cannot price a different book.
+                    basis = "eBay ISBN search; " + basis
             quotes.append(
                 {
                     "ref_id": line["id"],
@@ -302,6 +445,7 @@ class EbayProvider:
             for q in ordered
         ]
         chosen["source"] += f"; median of {len(ordered)} matching listings"
+        chosen["price_range"] = price_range(ordered)
         if chosen["kind"] == "item":
             chosen["amount"], chosen["high"] = (
                 ordered[0]["amount"],
@@ -312,7 +456,18 @@ class EbayProvider:
     async def get_book_quotes(
         self, book: dict, locale: Locale, client: httpx.AsyncClient
     ) -> ProviderResult:
-        query = book.get("isbn") or " ".join(filter(None, [book.get("title"), book.get("author")]))
+        # Search order: the ISBN read off the book, the catalogue ISBN, then title + author.
+        # An ISBN search that finds fewer than two matching listings falls back to the title.
+        title_query = " ".join(filter(None, [book.get("title"), book.get("author")]))
+        searches = [
+            (basis, query)
+            for basis, query in (
+                ("visible ISBN", book.get("isbn")),
+                ("catalogue ISBN (edition assumed)", book.get("catalogue_isbn")),
+                ("title and author", title_query),
+            )
+            if query
+        ]
         quotes, attempts, calls = [], {}, 0
         minimum = settings.pricing_min_match
         for kind, conditions in (
@@ -320,16 +475,26 @@ class EbayProvider:
             ("used", USED_CONDITIONS),
         ):
             try:
-                calls += 1
-                listings = await self._search(query, locale, conditions, client)
-                candidates = [
-                    q
-                    for q in self._quotes(book, kind, listings, locale)
-                    if q["match_score"] >= minimum
-                ]
+                tried = []
+                for basis, query in searches:
+                    calls += 1
+                    listings = await self._search(query, locale, conditions, client)
+                    candidates = [
+                        dict(q, search_basis=basis)
+                        for q in self._quotes(
+                            book, kind, listings, locale, isbn_search="ISBN" in basis
+                        )
+                        if q["match_score"] >= minimum
+                    ]
+                    tried.append(
+                        {"basis": basis, "listings": len(listings), "matching": len(candidates)}
+                    )
+                    if len(candidates) >= 2 or basis == searches[-1][0]:
+                        break
                 attempts[kind] = {
-                    "listings": len(listings),
-                    "matching": len(candidates),
+                    "listings": tried[-1]["listings"] if tried else 0,
+                    "matching": tried[-1]["matching"] if tried else 0,
+                    "searches": tried,
                 }
                 chosen = self.median_quote(candidates)
                 if chosen:
@@ -559,6 +724,25 @@ async def research_inventory(
                         flush=True,
                     )
                     continue
+            if (
+                is_book
+                and line.get("title")
+                and not line.get("isbn")
+                and settings.resolve_catalogue_isbn
+            ):
+                resolution = await resolve_catalogue_isbn(line, client)
+                result["isbn_resolution"] = resolution
+                _record_cost(packet, "isbn_lookup", int(resolution.get("calls", 1)), 0.0)
+                if resolution["status"] == "resolved":
+                    line["catalogue_isbn"] = resolution["isbn"]
+                    line["isbn_source"] = f"{resolution['source']}; edition assumed" + (
+                        f" ({resolution['edition_note']})" if resolution.get("edition_note") else ""
+                    )
+                    line["isbn_url"] = resolution.get("url", "")
+                print(
+                    f"[DEBUG {stamp()}] research.isbn ref_id={line['id']} status={resolution['status']} isbn={resolution.get('isbn', '')}",
+                    flush=True,
+                )
             for provider in providers:
                 started = time.perf_counter()
                 lookup = provider.get_book_quotes if is_book else provider.get_item_quotes

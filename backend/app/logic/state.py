@@ -196,6 +196,9 @@ async def run_research(sweep_id: str) -> dict:
         for observed in snapshot["books"]:
             source = observed.get("identity_source", {})
             current = next((b for b in packet["books"] if b["id"] == observed["id"]), None)
+            if current and observed.get("catalogue_isbn") and not current.get("identity_source"):
+                for key in ("catalogue_isbn", "isbn_source", "isbn_url"):
+                    current[key] = observed.get(key, "")
             if current and observed.get("title_rejected") and not current.get("identity_source"):
                 for key in ("proposed_title", "title", "author", "status", "title_rejected"):
                     current[key] = observed[key]

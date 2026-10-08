@@ -41,6 +41,20 @@ def identify_observation(observation, source_text, count_validation, threshold=0
     }
 
 
+def valid_isbn(value):
+    """Return the ISBN as digits (X allowed last for ISBN-10) when its checksum is valid."""
+    import re
+
+    value = re.sub(r"[^0-9Xx]", "", str(value or "")).upper()
+    if len(value) == 13 and value.isdigit() and value.startswith(("978", "979")):
+        if sum(int(c) * (1 if i % 2 == 0 else 3) for i, c in enumerate(value)) % 10 == 0:
+            return value
+    if len(value) == 10 and value[:9].isdigit() and (value[-1].isdigit() or value[-1] == "X"):
+        if sum((10 - i) * (10 if c == "X" else int(c)) for i, c in enumerate(value)) % 11 == 0:
+            return value
+    return ""
+
+
 def visible_isbn(text):
     """Accept only a visible ISBN label and a valid ISBN-10/13 checksum."""
     import re
